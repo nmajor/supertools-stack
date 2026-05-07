@@ -38,11 +38,11 @@ try {
   console.log(`[L1] Running install.sh against ${target}...`);
   await runCmd('bash', [path.join(repoRoot, 'install.sh'), target, '--no-refresh']);
 
-  console.log('[L2] Typecheck (pnpm tsc --noEmit)...');
-  await runCmd('pnpm', ['tsc', '--noEmit'], { cwd: target });
+  console.log('[L2] Typecheck (npx tsc --noEmit)...');
+  await runCmd('npx', ['--no-install', 'tsc', '--noEmit'], { cwd: target });
 
   console.log('[L3] Booting wrangler dev (port 8787)...');
-  dev = spawnBg('pnpm', ['wrangler', 'dev', '--port=8787', '--ip=127.0.0.1'], { cwd: target });
+  dev = spawnBg('npx', ['--no-install', 'wrangler', 'dev', '--port=8787', '--ip=127.0.0.1'], { cwd: target });
 
   // Pipe wrangler output (handy for debugging failures)
   dev.stdout.on('data', (b) => process.stdout.write(`[wrangler] ${b}`));

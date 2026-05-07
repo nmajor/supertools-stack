@@ -57,12 +57,12 @@ if (meaningful.length === 0) {
   console.log(`  (TODO v0.2+: layer ${meaningful.length} customization(s) with placeholder substitution)`);
 }
 
-// Step 3: ensure deps installed (cloudflare scaffolder typically runs `pnpm install`
-// already — this is a safety net if --accept-defaults skipped it)
+// Step 3: ensure deps installed (the scaffolder typically runs `npm install`
+// during --accept-defaults; this is a safety net if not)
 console.log('[3/3] Verifying deps installed...');
 const hasNodeModules = await fs.stat(path.join(targetAbs, 'node_modules')).then(() => true).catch(() => false);
 if (!hasNodeModules) {
-  await runCmd('pnpm', ['install'], { cwd: targetAbs });
+  await runCmd('npm', ['install'], { cwd: targetAbs });
 } else {
   console.log('  (node_modules already present — skipping)');
 }
@@ -70,4 +70,4 @@ if (!hasNodeModules) {
 console.log('');
 console.log(`✓ Done. Next:`);
 console.log(`  cd ${targetAbs}`);
-console.log(`  pnpm dev`);
+console.log(`  npm run dev`);
