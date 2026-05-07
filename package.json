@@ -1,0 +1,16 @@
+{
+  "name": "supertools-stack",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Canonical app-stack template for supertools-design bootstraps. Maintained as a tested artifact.",
+  "scripts": {
+    "test": "node scripts/test.mjs",
+    "refresh": "node scripts/refresh.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/nmajor/supertools-stack"
+}
