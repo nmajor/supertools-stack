@@ -6,6 +6,7 @@
   "description": "Canonical app-stack template for supertools-design bootstraps. Maintained as a tested artifact.",
   "scripts": {
     "test": "node scripts/test.mjs",
+    "test:unit": "node --test scripts/*.test.mjs",
     "refresh": "node scripts/refresh.mjs"
   },
   "engines": {
