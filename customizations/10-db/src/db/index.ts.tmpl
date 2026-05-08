@@ -1,0 +1,11 @@
+// Drizzle client bound to the D1 binding declared in wrangler.jsonc as `DB`.
+// `D1Database` is provided globally by worker-configuration.d.ts (regenerated
+// via `npm run cf-typegen` after wrangler.jsonc changes).
+import { drizzle } from 'drizzle-orm/d1';
+import * as schema from './schema';
+
+export function getDb(env: { DB: D1Database }) {
+  return drizzle(env.DB, { schema });
+}
+
+export type Db = ReturnType<typeof getDb>;

@@ -1,0 +1,15 @@
+// Minimal Vitest config for the cascade-contract test (and any future
+// schema-introspection tests under tests/10-db/). The project-level
+// vite.config.ts loads the @cloudflare/vite-plugin, which rejects the
+// default `resolve.external` Vitest injects — incompatible by design,
+// since these tests run in plain Node and don't need the worker runtime.
+//
+// Keep this config dependency-free: no plugins, no environment overrides.
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    include: ['tests/10-db/**/*.test.ts'],
+    environment: 'node',
+  },
+});

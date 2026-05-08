@@ -1,0 +1,80 @@
+// Cascade contract — runtime introspection of src/db/schema.ts.
+//
+// Walks every exported Drizzle table, finds every foreign key whose target is
+// `user.id`, and asserts onDelete === 'cascade'. Failure messages name the
+// offending table.column so the fix is one-line obvious.
+//
+// This is the data-deletion safety net: when a user account is deleted, every
+// row owned by that user MUST go with it. Adding a new user-owned table without
+// the cascade is the failure mode this test exists to catch.
+import { describe, it, expect } from 'vitest';
+import { getTableConfig } from 'drizzle-orm/sqlite-core';
+import * as schema from '../../src/db/schema';
+
+const IS_DRIZZLE_TABLE = Symbol.for('drizzle:IsDrizzleTable');
+
+function isDrizzleTable(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Record<symbol, unknown>)[IS_DRIZZLE_TABLE] === true
+  );
+}
+
+describe('cascade contract', () => {
+  it('every FK referencing user.id has onDelete: cascade', () => {
+    const failures: string[] = [];
+
+    for (const [exportName, value] of Object.entries(schema)) {
+      if (!isDrizzleTable(value)) continue;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const config = getTableConfig(value as any);
+
+      for (const fk of config.foreignKeys) {
+        const ref = fk.reference();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const targetConfig = getTableConfig(ref.foreignTable as any);
+        if (targetConfig.name !== 'user') continue;
+
+        const targetCol = ref.foreignColumns[0];
+        if (targetCol?.name !== 'id') continue; // Only care about FKs at user.id
+
+        if (fk.onDelete !== 'cascade') {
+          const sourceCol = ref.columns[0]?.name ?? '?';
+          failures.push(
+            `${config.name}.${sourceCol} -> user.id has onDelete=${
+              fk.onDelete ?? 'undefined'
+            }, expected 'cascade' (export: ${exportName})`,
+          );
+        }
+      }
+    }
+
+    expect(failures).toEqual([]);
+  });
+
+  it('schema declares a user table', () => {
+    // Sanity check: if this fails the test above is silently passing because
+    // there are no FKs to user.id.
+    const userTable = (schema as Record<string, unknown>).user;
+    expect(isDrizzleTable(userTable)).toBe(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(getTableConfig(userTable as any).name).toBe('user');
+  });
+
+  it('the demo example table cascades on user delete', () => {
+    // The example table is the canary for the cascade pattern. If it ever
+    // stops cascading, the pattern itself is broken — fail loudly.
+    const example = (schema as Record<string, unknown>).example;
+    expect(isDrizzleTable(example)).toBe(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const config = getTableConfig(example as any);
+    const userFk = config.foreignKeys.find((fk) => {
+      const ref = fk.reference();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return getTableConfig(ref.foreignTable as any).name === 'user';
+    });
+    expect(userFk).toBeDefined();
+    expect(userFk?.onDelete).toBe('cascade');
+  });
+});

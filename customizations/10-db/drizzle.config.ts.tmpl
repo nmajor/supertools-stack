@@ -1,0 +1,16 @@
+// Drizzle config for D1 (sqlite). Local development uses wrangler's miniflare
+// D1 storage and reads the schema directly — no API access required. Production
+// fills CLOUDFLARE_* envs from the user's CF account/D1/token at deploy time.
+import { defineConfig } from 'drizzle-kit';
+
+export default defineConfig({
+  dialect: 'sqlite',
+  driver: 'd1-http',
+  schema: './src/db/schema.ts',
+  out: './drizzle',
+  dbCredentials: {
+    accountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
+    databaseId: process.env.CLOUDFLARE_DATABASE_ID || '',
+    token: process.env.CLOUDFLARE_D1_TOKEN || '',
+  },
+});

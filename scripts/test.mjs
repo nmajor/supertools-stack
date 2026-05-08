@@ -5,15 +5,20 @@
 // Renders an install into a tmp dir, typechecks, builds, boots vite dev, and
 // probes http://127.0.0.1:3001/. Exit 0 = pass, non-zero = fail.
 //
-// Layers exercised in v0.1:
-//   L1 — install.sh completes (cloudflare scaffolder + customizations apply)
-//   L2 — npm run build succeeds (production build; generates routeTree.gen.ts)
+// Layers exercised:
+//   L1   — install.sh completes (cloudflare scaffolder + customizations apply)
+//   L2   — npm run build succeeds (production build; generates routeTree.gen.ts)
 //   L2.5 — npx tsc --noEmit passes (must run AFTER build because the TanStack
 //          router plugin generates routeTree.gen.ts during vite build)
-//   L3 — vite dev boots and responds at /
+//   L2.6 — db setup: drizzle-kit generate (initial migration runs in 10-db's
+//          apply step, so this re-runs idempotently as a sanity check), then
+//          `wrangler d1 migrations apply --local <db-name>` against miniflare's
+//          local D1 (no API/network needed), then the cascade-contract vitest.
+//          Added with the 10-db install step.
+//   L3   — vite dev boots and responds at /
 //
-// L4 (Playwright e2e) and the cascade-delete contract test land in v0.2+ as
-// the customizations layer fills in db / auth / pages.
+// L4 (Playwright e2e) lands in v0.2+ as the customizations layer fills in
+// auth / pages.
 //
 // Note: TanStack Start's dev server is `vite dev` on port 3000, not
 // `wrangler dev` on 8787. See customizations/SCAFFOLD-NOTES.md.
@@ -238,6 +243,22 @@ try {
       // back as absolutes — which would point into the cache dir instead of
       // the new target's node_modules.
       await fs.cp(paths.dir, target, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+      // The cache was seeded after a full install run, so it carries receipts
+      // for every install step that existed at seed time. Wipe all receipts
+      // except 00-scaffold's so the orchestrator re-applies later steps with
+      // whatever's in customizations/ and scripts/install-steps/ today.
+      // Without this, edits to e.g. 10-db.mjs's templates wouldn't propagate
+      // to warm runs (subsequent steps would silently skip on the stale
+      // receipt). 00-scaffold's receipt is preserved because it's the only
+      // step the cache actually represents.
+      const stateDir = path.join(target, '.supertools-state');
+      let cleared = 0;
+      for (const f of (await fs.readdir(stateDir).catch(() => []))) {
+        if (f === '00-scaffold.json') continue;
+        await fs.rm(path.join(stateDir, f), { force: true });
+        cleared++;
+      }
+      if (cleared) console.log(`[cache HIT] cleared ${cleared} downstream receipt(s); orchestrator will re-apply those steps`);
       cacheHit = true;
     } else {
       console.log(`[cache MISS] hash=${cacheHash} no fresh entry; will scaffold cold and seed cache at ${paths.dir}`);
@@ -281,6 +302,19 @@ try {
 
   console.log('[L2.5] Typecheck (npx tsc --noEmit)...');
   await runCmd('npx', ['--no-install', 'tsc', '--noEmit'], { cwd: target });
+
+  // L2.6 — db setup. 10-db.mjs's apply() already ran db:generate; this re-runs
+  // it (idempotent — drizzle-kit no-ops when the schema hasn't changed) and
+  // then applies migrations to miniflare's local D1. The cascade-contract
+  // vitest is the gate that protects the data-deletion safety net.
+  console.log('[L2.6] db:generate (re-run; idempotent)...');
+  await runCmd('npm', ['run', 'db:generate'], { cwd: target });
+
+  console.log('[L2.6] Apply migrations to local D1 (miniflare)...');
+  await runCmd('npm', ['run', 'db:migrate:local'], { cwd: target });
+
+  console.log('[L2.6] Cascade-contract test (vitest)...');
+  await runCmd('npm', ['run', 'test:contract'], { cwd: target });
 
   // Pick a random free port to avoid collisions with anything else running on
   // the host. Skip `npm run dev` indirection so we don't have two `--port`
