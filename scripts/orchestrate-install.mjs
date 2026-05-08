@@ -1,20 +1,34 @@
 #!/usr/bin/env node
 //
-// orchestrate-install.mjs — heavy-lifting half of install.sh.
+// orchestrate-install.mjs — walks install-steps in numeric-prefix order.
 //
-// 1. Run `npm create cloudflare@latest --framework=tanstack-start` against the
-//    target directory.
-// 2. Layer customizations (v0.1: nothing — empty customizations dir).
-// 3. Run `pnpm install` in the result.
+// Each step in `scripts/install-steps/` exports:
+//   - id (string, e.g. "00-scaffold")
+//   - requires (array of step ids that must run first)
+//   - provides (array of capability names — purely informational for now)
+//   - detect(ctx) -> { skip: boolean, reason?: string }   (optional)
+//   - apply(ctx)  -> void
+//
+// The orchestrator:
+//   1. Loads every `<NN>-<name>.mjs` file under install-steps/, sorted by prefix.
+//   2. Validates each step's exports and verifies `requires` lists only refer
+//      to earlier steps that exist.
+//   3. For each step in order:
+//        - reads its receipt at <project>/.supertools-state/<id>.json (if any)
+//        - calls detect(ctx); if it returns { skip: true } we move on
+//        - calls apply(ctx); the step itself writes the receipt on success
+//        - any throw halts the whole pipeline (no later steps run)
+//
+// Re-running picks up where it left off because each completed step has a
+// receipt and detect() returns skip=true on receipt presence.
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
-import { runCmd } from './_lib.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { assertValidStep } from './install-steps/_step-lib.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, '..');
-const customizationsDir = path.join(repoRoot, 'customizations');
+const stepsDir = path.join(here, 'install-steps');
 
 const target = process.argv[2];
 if (!target) {
@@ -23,52 +37,61 @@ if (!target) {
 }
 
 const targetAbs = path.resolve(target);
-const projectName = path.basename(targetAbs);
-const parent = path.dirname(targetAbs);
+const ctx = {
+  targetPath: targetAbs,
+  projectName: path.basename(targetAbs),
+  parent: path.dirname(targetAbs),
+};
 
 console.log(`▶ Bootstrapping at ${targetAbs}`);
 
-// Step 1: cloudflare scaffolder
-//
-// IMPORTANT: do not pass --accept-defaults or --lang=ts here. As of C3 v2.68.1,
-// --accept-defaults silently overrides --framework (you'd get a Hello World
-// Worker instead of TanStack Start). The framework dispatcher fills in lang/
-// defaults itself via @tanstack/create-start.
-console.log('[1/3] Running `npm create cloudflare@latest --framework=tanstack-start`...');
-await fs.mkdir(parent, { recursive: true });
-await runCmd(
-  'npm',
-  [
-    'create', 'cloudflare@latest',
-    '--', projectName,
-    '--category=web-framework',
-    '--framework=tanstack-start',
-    '--no-deploy',
-    '--no-git',
-  ],
-  { cwd: parent }
-);
+// Discover steps
+const stepFiles = (await fs.readdir(stepsDir))
+  .filter((f) => /^\d{2}-[a-z][a-z0-9-]*\.mjs$/.test(f))
+  .sort();
 
-// Step 2: layer customizations (empty in v0.1)
-console.log('[2/3] Layering customizations...');
-const entries = await fs.readdir(customizationsDir).catch(() => []);
-const meaningful = entries.filter((e) => !e.startsWith('.') && e !== 'README.md');
-if (meaningful.length === 0) {
-  console.log('  (no customizations in v0.1 — passthrough)');
-} else {
-  // v0.2+: copy + render templates with placeholder substitution
-  // (use scripts/render.mjs)
-  console.log(`  (TODO v0.2+: layer ${meaningful.length} customization(s) with placeholder substitution)`);
+if (stepFiles.length === 0) {
+  console.error(`No install steps found in ${stepsDir}`);
+  process.exit(1);
 }
 
-// Step 3: ensure deps installed (the scaffolder typically runs `npm install`
-// during --accept-defaults; this is a safety net if not)
-console.log('[3/3] Verifying deps installed...');
-const hasNodeModules = await fs.stat(path.join(targetAbs, 'node_modules')).then(() => true).catch(() => false);
-if (!hasNodeModules) {
-  await runCmd('npm', ['install'], { cwd: targetAbs });
-} else {
-  console.log('  (node_modules already present — skipping)');
+const steps = [];
+for (const f of stepFiles) {
+  const mod = await import(pathToFileURL(path.join(stepsDir, f)).href);
+  assertValidStep(mod, f);
+  steps.push({ ...mod, _file: f });
+}
+
+// Validate requires
+const seenIds = new Set();
+for (const step of steps) {
+  for (const req of step.requires ?? []) {
+    if (!seenIds.has(req)) {
+      console.error(
+        `Step ${step.id} (${step._file}) requires "${req}" which hasn't run yet ` +
+        `(missing or out of order).`
+      );
+      process.exit(1);
+    }
+  }
+  seenIds.add(step.id);
+}
+
+// Run them in order
+for (const step of steps) {
+  console.log(`[${step.id}]`);
+  const det = step.detect ? await step.detect(ctx) : { skip: false };
+  if (det.skip) {
+    console.log(`  skipped: ${det.reason || 'detect returned skip'}`);
+    continue;
+  }
+  try {
+    await step.apply(ctx);
+  } catch (e) {
+    console.error(`  ✗ ${step.id} failed: ${e.message}`);
+    console.error(`  Re-run \`install.sh ${target}\` after fixing — completed steps will be skipped via their receipts.`);
+    process.exit(1);
+  }
 }
 
 console.log('');

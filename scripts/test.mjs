@@ -22,7 +22,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { runCmd, spawnBg, waitForUrl } from './_lib.mjs';
+import { runCmd, spawnBg, waitForUrl, killProcessGroup, pickFreePort } from './_lib.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
@@ -32,9 +32,9 @@ const target = path.join(tmpRoot, 'sample-app');
 
 let dev = null;
 async function cleanup() {
-  if (dev && dev.pid) {
-    try { dev.kill('SIGTERM'); } catch {}
-  }
+  // Kill the entire process group — vite spawns grandchildren (workerd) that
+  // survive child.kill() and end up squatting ports across test runs.
+  await killProcessGroup(dev);
   await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
 }
 
@@ -49,20 +49,24 @@ try {
   console.log('[L2.5] Typecheck (npx tsc --noEmit)...');
   await runCmd('npx', ['--no-install', 'tsc', '--noEmit'], { cwd: target });
 
-  console.log('[L3] Booting `vite dev` (port 3001)...');
-  dev = spawnBg('npm', ['run', 'dev', '--', '--port=3001', '--host=127.0.0.1'], { cwd: target });
+  // Pick a random free port to avoid collisions with anything else running on
+  // the host. Skip `npm run dev` indirection so we don't have two `--port`
+  // flags fighting (the package.json script already hardcodes `--port 3000`).
+  const devPort = await pickFreePort();
+  console.log(`[L3] Booting vite dev on port ${devPort}...`);
+  dev = spawnBg(
+    path.join(target, 'node_modules', '.bin', 'vite'),
+    ['dev', `--port=${devPort}`, '--strictPort', '--host=127.0.0.1'],
+    { cwd: target }
+  );
 
   // Pipe dev-server output (handy for debugging failures)
   dev.stdout.on('data', (b) => process.stdout.write(`[dev] ${b}`));
   dev.stderr.on('data', (b) => process.stderr.write(`[dev] ${b}`));
 
-  await waitForUrl('http://127.0.0.1:3001/', 90_000);
-
-  console.log('[L3] HTTP probe http://127.0.0.1:3001/ ...');
-  const res = await fetch('http://127.0.0.1:3001/');
-  if (res.status !== 200) {
-    throw new Error(`Expected 200, got ${res.status}`);
-  }
+  const url = `http://127.0.0.1:${devPort}/`;
+  console.log(`[L3] HTTP probe ${url} (waiting for 200)...`);
+  const res = await waitForUrl(url, { timeoutMs: 90_000 });
   console.log(`     OK (status ${res.status})`);
   ok = true;
 } catch (e) {
