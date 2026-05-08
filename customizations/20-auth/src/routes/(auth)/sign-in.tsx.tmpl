@@ -1,6 +1,6 @@
-// Sign-in page — minimal email/password form. Tailwind for layout only
-// (centered card, spacing) — no custom colors, rounded corners, or typography
-// choices. Per HANDOFF "default unstyled pages with Tailwind-for-layout-only."
+// Sign-in page — basic auth screen styled with plain Tailwind utilities.
+// Card layout, no UI library. Behavior is contract: signIn.email + navigate
+// on success + error banner on failure.
 import { useState } from 'react';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { signIn } from '../../lib/auth-client';
@@ -35,42 +35,72 @@ function SignIn() {
   }
 
   return (
-    <main className="mx-auto max-w-sm px-4 py-16">
-      <h1 className="mb-4 text-xl">Sign in</h1>
-      <form onSubmit={onSubmit} className="space-y-3">
-        <input
-          required
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="block w-full border p-2"
-          autoComplete="email"
-        />
-        <input
-          required
-          type="password"
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="block w-full border p-2"
-          autoComplete="current-password"
-        />
-        {error ? <p className="text-sm">{error}</p> : null}
-        <button
-          type="submit"
-          disabled={pending}
-          className="block w-full border px-3 py-2"
-        >
-          {pending ? 'Signing in...' : 'Sign in'}
-        </button>
-      </form>
-      <p className="mt-4 text-sm">
-        New here?{' '}
-        <a href="/sign-up" className="underline">
-          Create an account
-        </a>
-      </p>
+    <main className="mx-auto flex max-w-sm flex-col px-4 py-12">
+      <div className="rounded-lg bg-white p-6 shadow-md sm:p-8">
+        <h1 className="mb-1 text-2xl font-semibold text-gray-900">
+          Welcome back
+        </h1>
+        <p className="mb-6 text-sm text-gray-600">Sign in to your account</p>
+        {error ? (
+          <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {error}
+          </div>
+        ) : null}
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div>
+            <label
+              htmlFor="email"
+              className="mb-1 block text-sm font-medium text-gray-700"
+            >
+              Email
+            </label>
+            <input
+              id="email"
+              required
+              type="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
+              autoComplete="email"
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="password"
+              className="mb-1 block text-sm font-medium text-gray-700"
+            >
+              Password
+            </label>
+            <input
+              id="password"
+              required
+              type="password"
+              placeholder="Your password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
+              autoComplete="current-password"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={pending}
+            className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
+          >
+            {pending ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+        <p className="mt-6 text-center text-sm text-gray-600">
+          New here?{' '}
+          <a
+            href="/sign-up"
+            className="text-blue-600 underline hover:text-blue-700"
+          >
+            Create an account
+          </a>
+        </p>
+      </div>
     </main>
   );
 }
