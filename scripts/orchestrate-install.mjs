@@ -28,7 +28,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertValidStep } from './install-steps/_step-lib.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const stepsDir = path.join(here, 'install-steps');
+// Test-only override. Defaults to scripts/install-steps relative to this file.
+const stepsDir = process.env.STEPS_DIR || path.join(here, 'install-steps');
 
 const target = process.argv[2];
 if (!target) {
