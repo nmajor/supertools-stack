@@ -29,6 +29,11 @@ const parent = path.dirname(targetAbs);
 console.log(`▶ Bootstrapping at ${targetAbs}`);
 
 // Step 1: cloudflare scaffolder
+//
+// IMPORTANT: do not pass --accept-defaults or --lang=ts here. As of C3 v2.68.1,
+// --accept-defaults silently overrides --framework (you'd get a Hello World
+// Worker instead of TanStack Start). The framework dispatcher fills in lang/
+// defaults itself via @tanstack/create-start.
 console.log('[1/3] Running `npm create cloudflare@latest --framework=tanstack-start`...');
 await fs.mkdir(parent, { recursive: true });
 await runCmd(
@@ -36,11 +41,10 @@ await runCmd(
   [
     'create', 'cloudflare@latest',
     '--', projectName,
+    '--category=web-framework',
     '--framework=tanstack-start',
-    '--lang=ts',
     '--no-deploy',
     '--no-git',
-    '--accept-defaults',
   ],
   { cwd: parent }
 );

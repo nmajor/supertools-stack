@@ -2,16 +2,21 @@
 //
 // test.mjs — supertools-stack functional test harness.
 //
-// Renders an install into a tmp dir, verifies it boots and responds at
-// http://127.0.0.1:8787/. Exit 0 = pass, non-zero = fail.
+// Renders an install into a tmp dir, typechecks, builds, boots vite dev, and
+// probes http://127.0.0.1:3001/. Exit 0 = pass, non-zero = fail.
 //
 // Layers exercised in v0.1:
 //   L1 — install.sh completes (cloudflare scaffolder + customizations apply)
-//   L2 — pnpm typecheck passes
-//   L3 — wrangler dev boots and responds
+//   L2 — npm run build succeeds (production build; generates routeTree.gen.ts)
+//   L2.5 — npx tsc --noEmit passes (must run AFTER build because the TanStack
+//          router plugin generates routeTree.gen.ts during vite build)
+//   L3 — vite dev boots and responds at /
 //
-// L4 (Playwright) and the cascade-delete contract test land in v0.2+ as we
-// add the customizations layer.
+// L4 (Playwright e2e) and the cascade-delete contract test land in v0.2+ as
+// the customizations layer fills in db / auth / pages.
+//
+// Note: TanStack Start's dev server is `vite dev` on port 3000, not
+// `wrangler dev` on 8787. See customizations/SCAFFOLD-NOTES.md.
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -38,20 +43,23 @@ try {
   console.log(`[L1] Running install.sh against ${target}...`);
   await runCmd('bash', [path.join(repoRoot, 'install.sh'), target, '--no-refresh']);
 
-  console.log('[L2] Typecheck (npx tsc --noEmit)...');
+  console.log('[L2] Production build (npm run build)...');
+  await runCmd('npm', ['run', 'build'], { cwd: target });
+
+  console.log('[L2.5] Typecheck (npx tsc --noEmit)...');
   await runCmd('npx', ['--no-install', 'tsc', '--noEmit'], { cwd: target });
 
-  console.log('[L3] Booting wrangler dev (port 8787)...');
-  dev = spawnBg('npx', ['--no-install', 'wrangler', 'dev', '--port=8787', '--ip=127.0.0.1'], { cwd: target });
+  console.log('[L3] Booting `vite dev` (port 3001)...');
+  dev = spawnBg('npm', ['run', 'dev', '--', '--port=3001', '--host=127.0.0.1'], { cwd: target });
 
-  // Pipe wrangler output (handy for debugging failures)
-  dev.stdout.on('data', (b) => process.stdout.write(`[wrangler] ${b}`));
-  dev.stderr.on('data', (b) => process.stderr.write(`[wrangler] ${b}`));
+  // Pipe dev-server output (handy for debugging failures)
+  dev.stdout.on('data', (b) => process.stdout.write(`[dev] ${b}`));
+  dev.stderr.on('data', (b) => process.stderr.write(`[dev] ${b}`));
 
-  await waitForUrl('http://127.0.0.1:8787/', 90_000);
+  await waitForUrl('http://127.0.0.1:3001/', 90_000);
 
-  console.log('[L3] HTTP probe http://127.0.0.1:8787/ ...');
-  const res = await fetch('http://127.0.0.1:8787/');
+  console.log('[L3] HTTP probe http://127.0.0.1:3001/ ...');
+  const res = await fetch('http://127.0.0.1:3001/');
   if (res.status !== 200) {
     throw new Error(`Expected 200, got ${res.status}`);
   }
