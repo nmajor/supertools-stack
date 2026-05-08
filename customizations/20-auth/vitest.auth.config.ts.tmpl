@@ -1,0 +1,18 @@
+// Vitest config for the 20-auth signup-flow test. The test runs against a
+// live dev server (developer runs `npm run dev` in another shell first), so
+// this is a smoke test, not a harness gate. The harness's L3.5 layer is the
+// gate that runs every `node scripts/test.mjs`.
+//
+// Mirrors vitest.contract.config.ts (10-db) intentionally — we keep one config
+// per step so each step's tests live behind a clean ownership boundary.
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    include: ['tests/20-auth/**/*.test.ts'],
+    environment: 'node',
+    // The signup test hits a live dev server; allow generous timeouts for
+    // cold-starts on slower hosts.
+    testTimeout: 30_000,
+  },
+});

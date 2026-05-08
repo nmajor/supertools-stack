@@ -16,6 +16,10 @@
 //          local D1 (no API/network needed), then the cascade-contract vitest.
 //          Added with the 10-db install step.
 //   L3   — vite dev boots and responds at /
+//   L3.5 — auth signup flow: POST /api/auth/sign-up/email -> 200 + session
+//          cookie, then GET /api/auth/get-session -> the user we just signed
+//          up. Runs against the same dev server L3 just probed. Added with
+//          the 20-auth install step.
 //
 // L4 (Playwright e2e) lands in v0.2+ as the customizations layer fills in
 // auth / pages.
@@ -335,6 +339,66 @@ try {
   console.log(`[L3] HTTP probe ${url} (waiting for 200)...`);
   const res = await waitForUrl(url, { timeoutMs: 90_000 });
   console.log(`     OK (status ${res.status})`);
+
+  // ─── L3.5 — signup flow (Better Auth) ────────────────────────────────────
+  // Hits the live dev server. The dev server already loaded `.dev.vars` (so
+  // BETTER_AUTH_SECRET is populated) and bound D1 to local miniflare. First
+  // POST creates a user; second GET reads the session back. Both are server-
+  // side Better Auth endpoints — no client React involved here. If either
+  // fails, the harness exits non-zero with a message naming the failing step.
+  const signupEmail = `test-${Date.now()}@example.local`;
+  const signupPassword = 'super-secret-test-password';
+
+  console.log(`[L3.5] Signup flow (POST /api/auth/sign-up/email -> 200 + session)...`);
+  // Better Auth enforces an Origin header for CSRF protection on POSTs (returns
+  // MISSING_OR_NULL_ORIGIN otherwise). The dev server's origin is the same
+  // host we're probing, so reflect it in the request header.
+  const origin = url.replace(/\/$/, '');
+  const signupRes = await fetch(`${url}api/auth/sign-up/email`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: origin,
+    },
+    body: JSON.stringify({
+      email: signupEmail,
+      password: signupPassword,
+      name: 'Harness Test User',
+    }),
+  });
+  if (!signupRes.ok) {
+    const body = await signupRes.text().catch(() => '');
+    throw new Error(`L3.5 signup failed: ${signupRes.status} ${body}`);
+  }
+  // Node 18+ exposes getSetCookie on Headers; older fallback uses
+  // get('set-cookie') which collapses comma-joined cookies and breaks the
+  // first one. We want the first Set-Cookie verbatim.
+  const setCookies = typeof signupRes.headers.getSetCookie === 'function'
+    ? signupRes.headers.getSetCookie()
+    : [signupRes.headers.get('set-cookie')].filter(Boolean);
+  if (setCookies.length === 0 || !setCookies[0]) {
+    throw new Error('L3.5 signup did not return a session cookie');
+  }
+  const cookie = setCookies[0];
+  console.log(`       OK (user: ${signupEmail})`);
+
+  console.log(`[L3.5] Get session (GET /api/auth/get-session)...`);
+  const sessionRes = await fetch(`${url}api/auth/get-session`, {
+    headers: { Cookie: cookie },
+  });
+  if (!sessionRes.ok) {
+    const body = await sessionRes.text().catch(() => '');
+    throw new Error(`L3.5 get-session failed: ${sessionRes.status} ${body}`);
+  }
+  const session = await sessionRes.json();
+  if (session?.user?.email !== signupEmail) {
+    throw new Error(
+      `L3.5 get-session did not return the signed-up user: ` +
+      `got ${JSON.stringify(session?.user ?? null)}, expected email=${signupEmail}`,
+    );
+  }
+  console.log(`       OK (user matches signed-up email)`);
+
   ok = true;
 } catch (e) {
   console.error('FAIL:', e.message);

@@ -1,0 +1,97 @@
+// Better Auth server config — wires Better Auth to the D1 database declared in
+// wrangler.jsonc as `DB`, using the schema from src/db/schema.ts.
+//
+// The `cloudflare:workers` `env` proxy is how this isolate reaches its
+// configured bindings (D1 + secrets). Reading from `env` at module-import time
+// works in modern @cloudflare/vite-plugin + workerd, because `env` is the
+// global, isolate-scoped binding bag (not per-request). Local secrets live in
+// `.dev.vars` (gitignored) — the cloudflare vite plugin loads it at startup
+// and surfaces values via `env`. The 20-auth install step generates a
+// `BETTER_AUTH_SECRET` there if missing.
+//
+// We build `auth` lazily on first call so the module can still be imported
+// during `vite build` (where `env` is unavailable). Once built, the same
+// instance is reused for the lifetime of the isolate.
+
+import { env } from 'cloudflare:workers';
+import { betterAuth, type BetterAuthOptions } from 'better-auth';
+import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { getDb } from '../db';
+import * as schema from '../db/schema';
+
+type AuthInstance = ReturnType<typeof betterAuth>;
+let _auth: AuthInstance | null = null;
+
+function buildAuth(): AuthInstance {
+  const e = env as unknown as {
+    DB: D1Database;
+    BETTER_AUTH_SECRET?: string;
+    BETTER_AUTH_URL?: string;
+    BETTER_AUTH_TRUSTED_ORIGINS?: string;
+  };
+
+  // Better Auth's CSRF protection rejects POSTs whose Origin doesn't match
+  // either `baseURL` or an entry in `trustedOrigins`. In dev the project may
+  // bind to any free port (the harness picks one at random), so we accept all
+  // localhost / 127.0.0.1 origins for development. Production should set
+  // BETTER_AUTH_TRUSTED_ORIGINS to a comma-separated list of public hosts.
+  const extraOrigins = (e.BETTER_AUTH_TRUSTED_ORIGINS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const trustedOrigins = [
+    // Wildcard ports for any local-loopback host. Better Auth supports glob
+    // patterns here (https://better-auth.com/docs/concepts/cookies#trusted-origins).
+    'http://localhost:*',
+    'http://127.0.0.1:*',
+    ...extraOrigins,
+  ];
+
+  const options: BetterAuthOptions = {
+    // D1 is sqlite under the hood. The drizzle adapter expects an explicit
+    // provider hint plus the schema mapping so it can find the user/session/
+    // account/verification tables declared in 10-db.
+    database: drizzleAdapter(getDb(e), {
+      provider: 'sqlite',
+      schema: {
+        user: schema.user,
+        session: schema.session,
+        account: schema.account,
+        verification: schema.verification,
+      },
+    }),
+    emailAndPassword: {
+      enabled: true,
+      // Better Auth's default minimum password length is 8. The sign-up form
+      // mirrors that via `minLength={8}`.
+    },
+    // Per HANDOFF: secret comes from env. In CF Workers we read via the
+    // `cloudflare:workers` env proxy (process.env doesn't exist in workerd).
+    // Local dev: `.dev.vars` provides this. Production: `wrangler secret put`.
+    secret: e.BETTER_AUTH_SECRET,
+    // Default to a runtime-derived value via BETTER_AUTH_URL when set;
+    // otherwise Better Auth falls back to inspecting incoming request URLs. We
+    // don't pin a build-time placeholder here — see HANDOFF "Public repo
+    // cleanliness".
+    baseURL: e.BETTER_AUTH_URL,
+    trustedOrigins,
+  };
+  return betterAuth(options);
+}
+
+export function getAuth(): AuthInstance {
+  if (!_auth) _auth = buildAuth();
+  return _auth;
+}
+
+// Convenience export — defers to getAuth() the first time it's invoked. Most
+// callers (the catch-all route, server-side session checks) just need the
+// `.handler` and `.api` surfaces so this proxy keeps the import ergonomics of
+// `import { auth } from '~/lib/auth'`.
+export const auth = new Proxy({} as AuthInstance, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getAuth() as object, prop, receiver);
+  },
+});
+
+export type Auth = AuthInstance;

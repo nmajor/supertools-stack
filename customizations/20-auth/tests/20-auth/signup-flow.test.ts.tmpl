@@ -1,0 +1,67 @@
+// signup-flow.test.ts — HTTP-level integration test against a live dev server.
+//
+// The developer runs `npm run dev` in one shell, then `npm run test:auth` in
+// another. The test:
+//   1. POSTs to /api/auth/sign-up/email and asserts 200 + a session cookie.
+//   2. GETs /api/auth/get-session with that cookie and asserts the user info.
+//
+// This is a smoke test; the harness's L3.5 layer (scripts/test.mjs) is the
+// gate that enforces the same flow against a freshly-installed project. If
+// you're hacking on auth locally, this is the faster inner-loop test.
+import { describe, it, expect, beforeAll } from 'vitest';
+
+const BASE = process.env.BETTER_AUTH_TEST_BASE_URL ?? 'http://localhost:3000';
+
+beforeAll(async () => {
+  // Sanity-check the dev server is reachable before all the asserts below
+  // start failing in confusing ways.
+  try {
+    const probe = await fetch(`${BASE}/`);
+    if (!probe.ok && probe.status !== 404) {
+      throw new Error(`unexpected probe status ${probe.status}`);
+    }
+  } catch (err) {
+    throw new Error(
+      `Dev server not reachable at ${BASE}. Start it with \`npm run dev\` ` +
+        `before running this test, or set BETTER_AUTH_TEST_BASE_URL.`,
+    );
+  }
+});
+
+describe('signup flow', () => {
+  const email = `test-${Date.now()}@example.local`;
+  const password = 'super-secret-test-password';
+  const name = 'Test User';
+  let sessionCookie: string | null = null;
+
+  it('POST /api/auth/sign-up/email returns 200 and sets a session cookie', async () => {
+    const res = await fetch(`${BASE}/api/auth/sign-up/email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, name }),
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+
+    // Better Auth uses Set-Cookie to deliver the session token. Node's fetch
+    // exposes getSetCookie() (returns string[]) on Headers; older runtimes
+    // only have .get('set-cookie') which collapses arrays.
+    const cookies =
+      typeof res.headers.getSetCookie === 'function'
+        ? res.headers.getSetCookie()
+        : [res.headers.get('set-cookie') ?? ''].filter(Boolean);
+    expect(cookies.length).toBeGreaterThan(0);
+    sessionCookie = cookies[0] ?? null;
+    expect(sessionCookie).toMatch(/better-auth\.session/);
+  });
+
+  it('GET /api/auth/get-session returns the signed-up user', async () => {
+    expect(sessionCookie, 'sign-up did not produce a cookie').toBeTruthy();
+
+    const res = await fetch(`${BASE}/api/auth/get-session`, {
+      headers: { Cookie: sessionCookie! },
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = (await res.json()) as { user?: { email?: string } } | null;
+    expect(body?.user?.email).toBe(email);
+  });
+});

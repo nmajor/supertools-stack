@@ -1,0 +1,21 @@
+// Catch-all server route that mounts Better Auth's request handler at
+// `/api/auth/*`. The `$` token is TanStack Start's wildcard — every method and
+// every subpath under `/api/auth/` flows through `auth.handler(request)`.
+//
+// Better Auth handles its own routing internally (`/sign-up/email`,
+// `/sign-in/email`, `/get-session`, `/sign-out`, etc.) — we just delegate.
+//
+// File extension is `.ts` (not `.tsx`): no JSX, no React. Per Better Auth's
+// TanStack Start integration docs and the scaffold's pure-TS server-route
+// convention.
+import { createFileRoute } from '@tanstack/react-router';
+import { auth } from '../../../lib/auth';
+
+export const Route = createFileRoute('/api/auth/$')({
+  server: {
+    handlers: {
+      GET: async ({ request }: { request: Request }) => auth.handler(request),
+      POST: async ({ request }: { request: Request }) => auth.handler(request),
+    },
+  },
+});
