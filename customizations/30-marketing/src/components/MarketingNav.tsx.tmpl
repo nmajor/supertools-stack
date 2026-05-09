@@ -2,9 +2,19 @@
 // the auth pages from 20-auth (white card surface, neutral grays, blue accent).
 // Brand text is intentionally generic ("Home"); the user fills in their own
 // product name. No logo, no image asset.
+//
+// Auth-awareness: uses Better Auth's `useSession` React hook (re-exported from
+// 20-auth's auth-client) to render either a "Dashboard" link (signed-in) or a
+// "Sign in" link (signed-out). While the session is still loading we render
+// NEITHER — that's a brief gap (~hydration time) but it avoids the flicker of
+// "Sign in" briefly appearing for an authed user on every page load. SSR sees
+// `isPending=true` so neither link is in the initial HTML; React hydration
+// flips to the correct one once the client-side session resolves.
 import { Link } from '@tanstack/react-router';
+import { useSession } from '../lib/auth-client';
 
 export function MarketingNav() {
+  const { data: session, isPending } = useSession();
   return (
     <header className="border-b border-gray-200 bg-white">
       <nav className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
@@ -27,12 +37,23 @@ export function MarketingNav() {
           >
             Resources
           </Link>
-          <Link
-            to="/sign-in"
-            className="no-underline hover:text-gray-900"
-          >
-            Sign in
-          </Link>
+          {!isPending && (
+            session?.user ? (
+              <Link
+                to="/dashboard"
+                className="no-underline hover:text-gray-900"
+              >
+                Dashboard
+              </Link>
+            ) : (
+              <Link
+                to="/sign-in"
+                className="no-underline hover:text-gray-900"
+              >
+                Sign in
+              </Link>
+            )
+          )}
         </div>
       </nav>
     </header>

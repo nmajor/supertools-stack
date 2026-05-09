@@ -2,12 +2,23 @@
 // Card layout, no UI library. Behavior is contract: signIn.email + navigate
 // on success + error banner on failure.
 import { useState } from 'react';
-import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router';
 import { signIn } from '../../lib/auth-client';
+import { getServerSession } from '../../lib/auth.functions';
 
 export const Route = createFileRoute('/(auth)/sign-in')({
   component: SignIn,
   head: () => ({ meta: [{ title: 'Sign in' }] }),
+  // Bounce already-authed users to the dashboard. Same server-function
+  // pattern as 40-dashboard's route.tsx, just with the inverted condition.
+  // Lives in beforeLoad so the redirect fires during SSR — the form never
+  // gets a chance to render for an authed visitor.
+  beforeLoad: async () => {
+    const session = await getServerSession();
+    if (session?.user) {
+      throw redirect({ to: '/dashboard' });
+    }
+  },
 });
 
 function SignIn() {

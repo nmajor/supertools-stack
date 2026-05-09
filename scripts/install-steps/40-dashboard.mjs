@@ -11,6 +11,11 @@
 //   `_marketing/` is pathless because its index serves `/`, but the dashboard
 //   needs to live at /dashboard so the path can't be flattened.
 //
+//   Note: the auth gate's `getServerSession` server function is shipped by
+//   20-auth (src/lib/auth.functions.ts) — both the dashboard's route and the
+//   sign-in/sign-up redirect-when-authed checks consume it, so it lives with
+//   the rest of the auth runtime rather than here.
+//
 // What this step does NOT do (deferred):
 //   - Playwright e2e — the orchestrator's Playwright MCP sidecar drives the UI
 //     post-commit. The HTTP-level cascade test (L3.7 in scripts/test.mjs) is
