@@ -1,0 +1,40 @@
+// Marketing top nav. Tailwind utilities only — matches the visual language of
+// the auth pages from 20-auth (white card surface, neutral grays, blue accent).
+// Brand text is intentionally generic ("Home"); the user fills in their own
+// product name. No logo, no image asset.
+import { Link } from '@tanstack/react-router';
+
+export function MarketingNav() {
+  return (
+    <header className="border-b border-gray-200 bg-white">
+      <nav className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+        <Link
+          to="/"
+          className="text-base font-semibold text-gray-900 no-underline"
+        >
+          Home
+        </Link>
+        <div className="flex items-center space-x-6 text-sm text-gray-600">
+          <Link
+            to="/pricing"
+            className="no-underline hover:text-gray-900"
+          >
+            Pricing
+          </Link>
+          <Link
+            to="/resources"
+            className="no-underline hover:text-gray-900"
+          >
+            Resources
+          </Link>
+          <Link
+            to="/sign-in"
+            className="no-underline hover:text-gray-900"
+          >
+            Sign in
+          </Link>
+        </div>
+      </nav>
+    </header>
+  );
+}

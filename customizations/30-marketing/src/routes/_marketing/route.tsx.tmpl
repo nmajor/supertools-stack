@@ -1,0 +1,32 @@
+// Marketing pathless layout. The directory `_marketing/` is treated as a
+// pathless route segment by TanStack Router (the `_` prefix tells the router
+// to skip it when matching URL paths), and a `route.tsx` inside the directory
+// serves as the layout for every child file.
+//
+// Net effect: `_marketing/index.tsx` -> `/`, `_marketing/pricing.tsx` ->
+// `/pricing`, etc. — all wrapped with the MarketingNav and Footer.
+//
+// Auth pages live under `(auth)/` and are intentionally not children of this
+// layout (they keep their own card-on-blank-canvas presentation).
+//
+// `min-h-screen flex flex-col` + `mt-auto` on the footer keeps the footer
+// stuck to the bottom of the viewport on short pages.
+import { Outlet, createFileRoute } from '@tanstack/react-router';
+import { MarketingNav } from '../../components/MarketingNav';
+import { Footer } from '../../components/Footer';
+
+export const Route = createFileRoute('/_marketing')({
+  component: MarketingLayout,
+});
+
+function MarketingLayout() {
+  return (
+    <div className="flex min-h-screen flex-col bg-gray-50">
+      <MarketingNav />
+      <main className="flex-1">
+        <Outlet />
+      </main>
+      <Footer />
+    </div>
+  );
+}

@@ -1,0 +1,29 @@
+// Marketing footer. Same visual language as MarketingNav. No brand name —
+// just `© <year>`. The year is computed at render time on purpose; hardcoding
+// would silently rot.
+import { Link } from '@tanstack/react-router';
+
+export function Footer() {
+  const year = new Date().getFullYear();
+  return (
+    <footer className="mt-auto border-t border-gray-200 bg-white">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-6 text-sm text-gray-500">
+        <p className="m-0">&copy; {year}</p>
+        <div className="flex items-center space-x-6">
+          <Link
+            to="/terms"
+            className="no-underline hover:text-gray-900"
+          >
+            Terms
+          </Link>
+          <Link
+            to="/privacy"
+            className="no-underline hover:text-gray-900"
+          >
+            Privacy
+          </Link>
+        </div>
+      </div>
+    </footer>
+  );
+}

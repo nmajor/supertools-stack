@@ -1,0 +1,26 @@
+// Home page — placeholder only. The user replaces this body wholesale.
+// JSON-LD WebSite blob is intentionally bland (no name, no description); the
+// L3.6 SEO smoke test asserts presence + parseability, not contents.
+import { createFileRoute } from '@tanstack/react-router';
+import { seoHead } from '../../components/SeoHead';
+
+export const Route = createFileRoute('/_marketing/')({
+  component: HomePage,
+  head: () =>
+    seoHead({
+      title: 'Home',
+      jsonLd: {
+        '@context': 'https://schema.org',
+        '@type': 'WebSite',
+      },
+    }),
+});
+
+function HomePage() {
+  return (
+    <div className="mx-auto max-w-6xl px-4 py-16">
+      <h1 className="text-2xl font-semibold text-gray-900">Home</h1>
+      <p className="mt-4 text-gray-600">Home goes here.</p>
+    </div>
+  );
+}

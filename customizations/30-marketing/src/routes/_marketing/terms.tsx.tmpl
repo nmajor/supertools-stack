@@ -1,0 +1,21 @@
+// Terms placeholder — the real terms-of-service body lives in the future
+// 50-legal install step (which renders a vetted template with the company /
+// domain / privacy-email placeholders). This file gets replaced wholesale at
+// that point. Keeping the route registered now means every link in the
+// footer resolves to a 200 from day one.
+import { createFileRoute } from '@tanstack/react-router';
+import { seoHead } from '../../components/SeoHead';
+
+export const Route = createFileRoute('/_marketing/terms')({
+  component: TermsPage,
+  head: () => seoHead({ title: 'Terms' }),
+});
+
+function TermsPage() {
+  return (
+    <div className="mx-auto max-w-6xl px-4 py-16">
+      <h1 className="text-2xl font-semibold text-gray-900">Terms</h1>
+      <p className="mt-4 text-gray-600">Terms goes here.</p>
+    </div>
+  );
+}

@@ -1,0 +1,47 @@
+// SeoHead — small helper for per-route head() output.
+//
+// TanStack Start's per-route `head` option returns an object shaped like
+// `{ meta?: [...], links?: [...], scripts?: [...] }`. The root route in
+// __root.tsx renders <HeadContent /> which inflates these into <title>,
+// <meta>, <link>, and <script> tags. Child route entries with matching
+// `name`/`property`/`title` override parent ones, so each marketing page
+// can set its own `<title>` and description without touching the root.
+//
+// Usage in a route file:
+//
+//   export const Route = createFileRoute('/(marketing)/pricing')({
+//     component: PricingPage,
+//     head: () => seoHead({ title: 'Pricing' }),
+//   });
+//
+// Pass `jsonLd` to inject a structured-data script. We deliberately keep the
+// JSON-LD blob bland (no brand, no product name) — the L3.6 SEO smoke test
+// asserts presence + parseability, not contents.
+
+export type SeoHeadInput = {
+  title: string;
+  description?: string;
+  jsonLd?: Record<string, unknown>;
+};
+
+export type SeoHeadOutput = {
+  meta: Array<Record<string, string>>;
+  scripts?: Array<{ type: string; children: string }>;
+};
+
+export function seoHead({ title, description, jsonLd }: SeoHeadInput): SeoHeadOutput {
+  const meta: Array<Record<string, string>> = [{ title }];
+  if (description) {
+    meta.push({ name: 'description', content: description });
+  }
+  const out: SeoHeadOutput = { meta };
+  if (jsonLd) {
+    out.scripts = [
+      {
+        type: 'application/ld+json',
+        children: JSON.stringify(jsonLd),
+      },
+    ];
+  }
+  return out;
+}

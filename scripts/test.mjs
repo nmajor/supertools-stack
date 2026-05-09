@@ -20,9 +20,18 @@
 //          cookie, then GET /api/auth/get-session -> the user we just signed
 //          up. Runs against the same dev server L3 just probed. Added with
 //          the 20-auth install step.
+//   L3.6 — marketing SEO smoke: GET each of the marketing routes (/, /pricing,
+//          /resources, /resources/example-resource, /terms, /privacy) and
+//          assert 200 + a non-empty <title>. The home page additionally must
+//          ship a parseable application/ld+json <script>. Plain HTTP — no
+//          Playwright dep / browser download — because the page bodies are
+//          empty placeholders and there's no UI to interact with. Added with
+//          the 30-marketing install step.
 //
-// L4 (Playwright e2e) lands in v0.2+ as the customizations layer fills in
-// auth / pages.
+// L4 (real Playwright e2e) lands when 30-marketing's pages get actual content
+// and 40-dashboard ships interactive UI. Until then, L3.6's HTTP probe is
+// sufficient: it asserts route registration, head() wiring, and JSON-LD
+// presence — exactly the things 30-marketing is responsible for.
 //
 // Note: TanStack Start's dev server is `vite dev` on port 3000, not
 // `wrangler dev` on 8787. See customizations/SCAFFOLD-NOTES.md.
@@ -398,6 +407,46 @@ try {
     );
   }
   console.log(`       OK (user matches signed-up email)`);
+
+  // ─── L3.6 — marketing SEO smoke ─────────────────────────────────────────
+  // Each path must return 200 with a non-empty <title>. The home page must
+  // additionally ship a parseable application/ld+json <script>. We grep the
+  // raw HTML rather than walk the DOM — the SSR'd page already has <title>
+  // and <script type="application/ld+json"> baked in by TanStack Start's
+  // HeadContent rendering, so plain regex is sufficient.
+  const seoPaths = [
+    '/',
+    '/pricing',
+    '/resources',
+    '/resources/example-resource',
+    '/terms',
+    '/privacy',
+  ];
+  console.log(`[L3.6] Marketing SEO smoke (${seoPaths.length} paths)...`);
+  for (const p of seoPaths) {
+    const pageRes = await fetch(`${origin}${p}`);
+    if (pageRes.status !== 200) {
+      throw new Error(`L3.6 GET ${p} expected 200, got ${pageRes.status}`);
+    }
+    const html = await pageRes.text();
+    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    if (!titleMatch || !titleMatch[1].trim()) {
+      throw new Error(`L3.6 GET ${p} returned 200 but <title> is missing or empty`);
+    }
+    if (p === '/') {
+      // Capture-group is non-greedy and dot-all so it spans multiline JSON.
+      const ldMatch = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i);
+      if (!ldMatch) {
+        throw new Error('L3.6 GET / has no application/ld+json script tag');
+      }
+      try {
+        JSON.parse(ldMatch[1]);
+      } catch (e) {
+        throw new Error(`L3.6 GET / JSON-LD did not parse: ${e.message}`);
+      }
+    }
+    console.log(`       OK (${p} title="${titleMatch[1].trim()}")`);
+  }
 
   ok = true;
 } catch (e) {

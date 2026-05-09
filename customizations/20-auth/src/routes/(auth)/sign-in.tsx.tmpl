@@ -7,6 +7,7 @@ import { signIn } from '../../lib/auth-client';
 
 export const Route = createFileRoute('/(auth)/sign-in')({
   component: SignIn,
+  head: () => ({ meta: [{ title: 'Sign in' }] }),
 });
 
 function SignIn() {

@@ -1,0 +1,19 @@
+// Example resource page — placeholder only. The route exists so the user has
+// a working URL to link from the resources index, but the body is empty so
+// there's no lorem ipsum or sample JSON-LD article to scrape and remove.
+import { createFileRoute } from '@tanstack/react-router';
+import { seoHead } from '../../../components/SeoHead';
+
+export const Route = createFileRoute('/_marketing/resources/example-resource')({
+  component: ExampleResource,
+  head: () => seoHead({ title: 'Example resource' }),
+});
+
+function ExampleResource() {
+  return (
+    <div className="mx-auto max-w-6xl px-4 py-16">
+      <h1 className="text-2xl font-semibold text-gray-900">Example resource</h1>
+      <p className="mt-4 text-gray-600">Example resource goes here.</p>
+    </div>
+  );
+}

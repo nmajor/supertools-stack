@@ -1,0 +1,18 @@
+// Privacy placeholder — replaced wholesale by the future 50-legal install
+// step. See terms.tsx for the same rationale.
+import { createFileRoute } from '@tanstack/react-router';
+import { seoHead } from '../../components/SeoHead';
+
+export const Route = createFileRoute('/_marketing/privacy')({
+  component: PrivacyPage,
+  head: () => seoHead({ title: 'Privacy' }),
+});
+
+function PrivacyPage() {
+  return (
+    <div className="mx-auto max-w-6xl px-4 py-16">
+      <h1 className="text-2xl font-semibold text-gray-900">Privacy</h1>
+      <p className="mt-4 text-gray-600">Privacy goes here.</p>
+    </div>
+  );
+}

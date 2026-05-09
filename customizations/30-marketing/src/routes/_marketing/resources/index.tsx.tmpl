@@ -1,0 +1,18 @@
+// Resources index — placeholder only. The user fills in their own article
+// list (or replaces with a CMS-backed loader). No sample articles ship.
+import { createFileRoute } from '@tanstack/react-router';
+import { seoHead } from '../../../components/SeoHead';
+
+export const Route = createFileRoute('/_marketing/resources/')({
+  component: ResourcesIndex,
+  head: () => seoHead({ title: 'Resources' }),
+});
+
+function ResourcesIndex() {
+  return (
+    <div className="mx-auto max-w-6xl px-4 py-16">
+      <h1 className="text-2xl font-semibold text-gray-900">Resources</h1>
+      <p className="mt-4 text-gray-600">Resources index goes here.</p>
+    </div>
+  );
+}
