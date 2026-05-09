@@ -1,0 +1,169 @@
+// Settings — minimal. Just the Danger zone block with Delete account behind a
+// typed-confirm modal. No theme settings, no profile edit, no email update —
+// see HANDOFF "Settings page: minimal — just the Danger zone block."
+//
+// Delete-account flow:
+//   1. User clicks "Delete account" -> opens modal
+//   2. Modal requires typing the literal word "DELETE" (case-sensitive) AND
+//      providing the current password (Better Auth requires fresh-auth proof).
+//   3. Submit calls authClient.deleteUser({ password }). On success we
+//      navigate to / (the user is now signed out and the session cookie is
+//      cleared by Better Auth's response). The cascade FK on user_id columns
+//      (declared in 10-db's schema) wipes any rows the user owned.
+//
+// Test hooks: data-testid attributes are wired so the orchestrator's Playwright
+// MCP sidecar can drive the modal end-to-end after commit. Don't remove them.
+import { useState } from 'react';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import { seoHead } from '../../components/SeoHead';
+import { authClient } from '../../lib/auth-client';
+
+export const Route = createFileRoute('/dashboard/settings')({
+  component: Settings,
+  head: () => seoHead({ title: 'Settings' }),
+});
+
+function Settings() {
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-16">
+      <h1 className="text-2xl font-semibold text-gray-900">Settings</h1>
+      <DangerZone />
+    </div>
+  );
+}
+
+function DangerZone() {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="mt-12 rounded-md border border-red-200 bg-red-50 p-6">
+      <h2 className="text-lg font-semibold text-red-900">Danger zone</h2>
+      <p className="mt-1 text-sm text-red-700">
+        Permanently delete your account and all your data. This cannot be undone.
+      </p>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-4 rounded-md border border-red-300 bg-white px-3 py-2 text-sm text-red-700 hover:bg-red-100"
+        data-testid="open-delete-account-modal"
+      >
+        Delete account
+      </button>
+      {open ? <DeleteAccountModal onClose={() => setOpen(false)} /> : null}
+    </section>
+  );
+}
+
+function DeleteAccountModal({ onClose }: { onClose: () => void }) {
+  const navigate = useNavigate();
+  const [confirmText, setConfirmText] = useState('');
+  const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Submit gate: typed-confirm must match exactly (case-sensitive), password
+  // must be non-empty, and we must not be mid-flight already.
+  const canSubmit =
+    confirmText === 'DELETE' && password.length > 0 && !submitting;
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await authClient.deleteUser({ password });
+      if (res.error) {
+        setError(res.error.message ?? 'Delete failed');
+        setSubmitting(false);
+        return;
+      }
+      // Better Auth clears the session cookie as part of the delete response.
+      // Navigate to / — the dashboard route's beforeLoad would redirect us to
+      // /sign-in if we tried to stay here.
+      navigate({ to: '/' });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Delete failed');
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+      data-testid="delete-account-modal"
+    >
+      <form
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={onSubmit}
+        className="w-full max-w-md rounded-lg bg-white p-6 shadow-lg"
+      >
+        <h3 className="text-lg font-semibold text-gray-900">Delete account</h3>
+        <p className="mt-2 text-sm text-gray-600">
+          Type{' '}
+          <code className="rounded bg-gray-100 px-1.5 py-0.5 font-mono">
+            DELETE
+          </code>{' '}
+          below and enter your current password to confirm. This action is
+          permanent.
+        </p>
+        <label
+          htmlFor="confirm-delete-text"
+          className="mt-4 block text-sm font-medium text-gray-700"
+        >
+          Type DELETE to confirm
+        </label>
+        <input
+          id="confirm-delete-text"
+          type="text"
+          value={confirmText}
+          onChange={(e) => setConfirmText(e.target.value)}
+          className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-red-500"
+          autoFocus
+          autoComplete="off"
+          data-testid="confirm-delete-text"
+        />
+        <label
+          htmlFor="confirm-delete-password"
+          className="mt-4 block text-sm font-medium text-gray-700"
+        >
+          Current password
+        </label>
+        <input
+          id="confirm-delete-password"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-red-500"
+          autoComplete="current-password"
+          data-testid="confirm-delete-password"
+        />
+        {error ? (
+          <p
+            className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+            data-testid="confirm-delete-error"
+          >
+            {error}
+          </p>
+        ) : null}
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            data-testid="confirm-delete-submit"
+            className="rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting ? 'Deleting…' : 'Permanently delete account'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}

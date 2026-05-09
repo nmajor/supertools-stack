@@ -65,6 +65,19 @@ function buildAuth(): AuthInstance {
       // Better Auth's default minimum password length is 8. The sign-up form
       // mirrors that via `minLength={8}`.
     },
+    // User-deletion endpoint, opt-in by Better Auth design (disabled by
+    // default). Enabling it exposes POST /api/auth/delete-user; the dashboard's
+    // Settings → Danger zone modal calls authClient.deleteUser({ password })
+    // against it. With no `sendDeleteAccountVerification` callback set, the
+    // password proof IS the verification — no email round-trip needed (the
+    // local-dev scaffold doesn't have an email transport configured anyway).
+    // This is the one piece of cross-step coupling between 20-auth and
+    // 40-dashboard; see scripts/install-steps/40-dashboard.mjs header.
+    user: {
+      deleteUser: {
+        enabled: true,
+      },
+    },
     // Per HANDOFF: secret comes from env. In CF Workers we read via the
     // `cloudflare:workers` env proxy (process.env doesn't exist in workerd).
     // Local dev: `.dev.vars` provides this. Production: `wrangler secret put`.

@@ -30,6 +30,18 @@
 //          HTTP — no Playwright dep / browser download — because the page
 //          bodies are static SSR'd HTML. Added with the 30-marketing install
 //          step; legal-content checks added with 50-legal.
+//   L3.7 — delete-account cascade: sign up a fresh user, insert an `example`
+//          row owned by them via `wrangler d1 execute --local`, hit Better
+//          Auth's POST /api/auth/delete-user with password proof, then assert
+//          (a) the session cookie is no longer valid (get-session returns
+//          { user: null }) and (b) the example row was removed by the FK
+//          cascade. Added with the 40-dashboard install step. UI-level
+//          coverage is delegated to the orchestrator's Playwright MCP sidecar
+//          post-commit; this layer is the HTTP/DB-level gate.
+//   L3.8 — dashboard auth gate: GET /dashboard unauthed -> 307 with
+//          Location /sign-in. Pins the SSR auth-gate contract so a regression
+//          to authClient.getSession() (which 500s under workerd self-fetch)
+//          can't ship silently. Added with the 40-dashboard install step.
 //
 // L4 (real Playwright e2e) lands when 30-marketing's pages get actual content
 // and 40-dashboard ships interactive UI. Until then, L3.6's HTTP probe is
@@ -53,7 +65,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { runCmd, spawnBg, waitForUrl, killProcessGroup, pickFreePort } from './_lib.mjs';
+import { runCmd, runCmdCapture, spawnBg, waitForUrl, killProcessGroup, pickFreePort } from './_lib.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
@@ -479,6 +491,166 @@ try {
     }
     console.log(`       OK (${p} title="${titleMatch[1].trim()}")`);
   }
+
+  // ─── L3.7 — delete-account cascade ─────────────────────────────────────
+  // 1. Sign up a fresh user.
+  // 2. Capture their user.id from /api/auth/get-session.
+  // 3. Insert an `example` row owned by that user via `wrangler d1 execute
+  //    --local` (we don't expose a test-only HTTP endpoint in the project; the
+  //    harness reaches into miniflare's local D1 directly).
+  // 4. POST /api/auth/delete-user with the password — Better Auth's
+  //    user.deleteUser must be enabled in auth.ts (40-dashboard's brief).
+  // 5. Assert get-session no longer returns the user (cookie invalidated).
+  // 6. Query example via `wrangler d1 execute --local --json` and assert the
+  //    row count for that user is 0 (FK cascade fired).
+  const dbName = `${path.basename(target)}-db`;
+  console.log('[L3.7] Delete-account cascade...');
+
+  const delEmail = `delete-test-${Date.now()}@example.local`;
+  const delPassword = 'delete-test-password';
+
+  console.log(`       Sign-up POST /api/auth/sign-up/email (${delEmail})...`);
+  const delSignupRes = await fetch(`${url}api/auth/sign-up/email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin },
+    body: JSON.stringify({ email: delEmail, password: delPassword, name: 'Delete Me' }),
+  });
+  if (!delSignupRes.ok) {
+    const body = await delSignupRes.text().catch(() => '');
+    throw new Error(`L3.7 signup failed: ${delSignupRes.status} ${body}`);
+  }
+  const delCookies = typeof delSignupRes.headers.getSetCookie === 'function'
+    ? delSignupRes.headers.getSetCookie()
+    : [delSignupRes.headers.get('set-cookie')].filter(Boolean);
+  if (delCookies.length === 0 || !delCookies[0]) {
+    throw new Error('L3.7 signup did not return a session cookie');
+  }
+  const delCookie = delCookies[0];
+
+  console.log('       GET /api/auth/get-session for user.id...');
+  const delSessionRes = await fetch(`${url}api/auth/get-session`, {
+    headers: { Cookie: delCookie },
+  });
+  if (!delSessionRes.ok) throw new Error(`L3.7 get-session failed: ${delSessionRes.status}`);
+  const delSession = await delSessionRes.json();
+  const delUserId = delSession?.user?.id;
+  if (!delUserId) throw new Error(`L3.7 get-session returned no user.id: ${JSON.stringify(delSession)}`);
+  // Defensive: user_id is interpolated into raw SQL below; ensure it's a plain
+  // identifier without quotes/semicolons. Better Auth IDs are URL-safe but we
+  // don't take that on faith.
+  if (!/^[A-Za-z0-9_-]+$/.test(delUserId)) {
+    throw new Error(`L3.7 user.id contains unexpected characters: ${delUserId}`);
+  }
+
+  const exampleRowId = `harness-test-${Date.now()}`;
+  console.log(`       Inserting example row (id=${exampleRowId}, user_id=${delUserId}) via wrangler d1 execute...`);
+  const insertSql =
+    `INSERT INTO example (id, user_id, content, created_at, updated_at) ` +
+    `VALUES ('${exampleRowId}', '${delUserId}', 'before delete', ` +
+    `cast(unixepoch('subsecond') * 1000 as integer), ` +
+    `cast(unixepoch('subsecond') * 1000 as integer));`;
+  const insertRes = await runCmdCapture(
+    'npx',
+    ['--no-install', 'wrangler', 'd1', 'execute', dbName, '--local', `--command=${insertSql}`],
+    { cwd: target },
+  );
+  if (insertRes.code !== 0) {
+    throw new Error(
+      `L3.7 example insert failed (exit ${insertRes.code}): ` +
+      `${insertRes.stderr || insertRes.stdout}`,
+    );
+  }
+
+  console.log('       POST /api/auth/delete-user (password proof)...');
+  const delRes = await fetch(`${url}api/auth/delete-user`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin, Cookie: delCookie },
+    body: JSON.stringify({ password: delPassword }),
+  });
+  if (!delRes.ok) {
+    const body = await delRes.text().catch(() => '');
+    throw new Error(`L3.7 delete-user failed: ${delRes.status} ${body}`);
+  }
+
+  console.log('       Verifying session is cleared...');
+  const postRes = await fetch(`${url}api/auth/get-session`, {
+    headers: { Cookie: delCookie },
+  });
+  // Better Auth returns 200 with a null user when the session is invalid
+  // (rather than 401). Either shape is acceptable as long as user is absent.
+  const postBody = postRes.ok ? await postRes.json().catch(() => null) : null;
+  if (postBody?.user) {
+    throw new Error(
+      `L3.7 session not cleared after delete: still got user ${postBody.user.id}`,
+    );
+  }
+
+  console.log('       Verifying example row was cascade-deleted...');
+  const queryRes = await runCmdCapture(
+    'npx',
+    [
+      '--no-install', 'wrangler', 'd1', 'execute', dbName, '--local', '--json',
+      `--command=SELECT COUNT(*) AS count FROM example WHERE user_id = '${delUserId}';`,
+    ],
+    { cwd: target },
+  );
+  if (queryRes.code !== 0) {
+    throw new Error(
+      `L3.7 cascade-verify query failed (exit ${queryRes.code}): ` +
+      `${queryRes.stderr || queryRes.stdout}`,
+    );
+  }
+  // wrangler --json prints a JSON array on stdout; results may be wrapped in
+  // metadata. Strip any leading non-JSON noise (warnings) and parse the first
+  // [ ... ] block we find.
+  const jsonStart = queryRes.stdout.indexOf('[');
+  if (jsonStart < 0) {
+    throw new Error(`L3.7 wrangler --json had no JSON output: ${queryRes.stdout}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(queryRes.stdout.slice(jsonStart));
+  } catch (e) {
+    throw new Error(`L3.7 wrangler --json did not parse: ${e.message}\n${queryRes.stdout}`);
+  }
+  // Shape: [{ results: [{ count: N }], success: true, ... }]
+  const count = parsed?.[0]?.results?.[0]?.count;
+  if (typeof count !== 'number') {
+    throw new Error(`L3.7 unexpected wrangler --json shape: ${JSON.stringify(parsed)}`);
+  }
+  if (count !== 0) {
+    throw new Error(
+      `L3.7 cascade did NOT fire: ${count} example row(s) still owned by deleted user ${delUserId}`,
+    );
+  }
+  console.log('       OK — user deleted, session cleared, example rows cascaded');
+
+  // ─── L3.8 — dashboard auth gate ────────────────────────────────────────
+  // Probes /dashboard with no Cookie. Expected: 307 redirect with Location
+  // /sign-in. Without this gate, an SSR regression in the auth gate would
+  // ship as a 500 ("Network connection lost" from a worker self-fetch) and
+  // L3.7 wouldn't catch it because L3.7 is always authed when it hits the
+  // dashboard. Pins the redirect contract instead.
+  console.log('[L3.8] Dashboard auth gate (GET /dashboard unauthed -> 307 /sign-in)...');
+  const gateRes = await fetch(`${url}dashboard`, {
+    redirect: 'manual',
+    headers: { Origin: url.replace(/\/$/, '') },
+  });
+  if (gateRes.status !== 307 && gateRes.status !== 302) {
+    throw new Error(
+      `L3.8 unauthed /dashboard expected 307/302 redirect, got ${gateRes.status}. ` +
+      `If this is a 500, the SSR auth gate is calling authClient.getSession() ` +
+      `(self-fetch) instead of the server-function pattern. See ` +
+      `customizations/40-dashboard/src/lib/auth.functions.ts.tmpl.`,
+    );
+  }
+  const gateLoc = gateRes.headers.get('location');
+  if (gateLoc !== '/sign-in') {
+    throw new Error(
+      `L3.8 unauthed /dashboard redirect target should be /sign-in, got ${gateLoc}`,
+    );
+  }
+  console.log('       OK — redirected to /sign-in');
 
   ok = true;
 } catch (e) {

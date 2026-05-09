@@ -1,0 +1,22 @@
+// Server-side session helpers for use in route loaders / beforeLoad / server
+// functions. Uses Better Auth's auth.api.getSession with the actual request
+// headers — the standard pattern documented at
+// https://better-auth.com/docs/integrations/tanstack.
+//
+// Why this exists: authClient.getSession() (the client API) makes an HTTP
+// fetch to /api/auth/get-session. That works in the browser but breaks during
+// SSR in Cloudflare Workers — workerd doesn't allow a worker to fetch back to
+// itself by relative URL. The server-function pattern below reads the
+// headers directly and calls Better Auth's server API, no self-fetch.
+import { createServerFn } from '@tanstack/react-start';
+import { getRequestHeaders } from '@tanstack/react-start/server';
+import { auth } from './auth';
+
+export const getServerSession = createServerFn({ method: 'GET' }).handler(async () => {
+  // getRequestHeaders() returns TanStack's TypedHeaders<RequestHeaderMap>; the
+  // unknown step is required because TypedHeaders isn't a Record<string,string>
+  // by index-signature shape, even though every value is in fact a string.
+  const headers = new Headers(getRequestHeaders() as unknown as HeadersInit);
+  const session = await auth.api.getSession({ headers });
+  return session ?? null;
+});

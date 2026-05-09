@@ -1,0 +1,59 @@
+// Dashboard layout route. The `dashboard/` directory is a real URL segment
+// (NOT pathless — `_marketing/` only works for marketing because its index
+// serves `/`; we need the dashboard to live at `/dashboard`). The `route.tsx`
+// inside the directory is treated as the layout route for every child file:
+//   - dashboard/route.tsx    -> /dashboard          (this layout)
+//   - dashboard/index.tsx    -> /dashboard/         (index child)
+//   - dashboard/settings.tsx -> /dashboard/settings
+//
+// The auth gate lives in `beforeLoad` so any unauthenticated request to
+// /dashboard or /dashboard/* throws a redirect to /sign-in BEFORE the layout
+// component renders. Verified via TanStack Router v1 docs
+// (createFileRoute + beforeLoad + redirect).
+//
+// Footer is intentionally omitted on the dashboard surface — different visual
+// register from marketing. The top nav shows a generic "Dashboard" brand on
+// the left and the UserMenu on the right.
+import { Outlet, createFileRoute, redirect, Link } from '@tanstack/react-router';
+import { getServerSession } from '../../lib/auth.functions';
+import { UserMenu } from '../../components/UserMenu';
+
+export const Route = createFileRoute('/dashboard')({
+  // Auth gate. Calls a server function that uses Better Auth's auth.api.getSession
+  // with the actual request headers — works on both SSR and client navigation.
+  // authClient.getSession() (the client API) breaks under workerd SSR because
+  // it tries to self-fetch /api/auth/get-session and the worker can't reach
+  // itself via relative URL. See src/lib/auth.functions.ts for the pattern.
+  beforeLoad: async () => {
+    const session = await getServerSession();
+    if (!session?.user) {
+      throw redirect({ to: '/sign-in' });
+    }
+    // Hand the user object to children via route context so they don't have to
+    // refetch client-side. TanStack merges this with parent context.
+    return { user: session.user };
+  },
+  component: DashboardLayout,
+});
+
+function DashboardLayout() {
+  const { user } = Route.useRouteContext();
+  return (
+    <div className="flex min-h-screen flex-col bg-gray-50">
+      <header className="border-b border-gray-200 bg-white">
+        <nav className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <Link
+            to="/dashboard"
+            className="text-base font-semibold text-gray-900 no-underline"
+          >
+            Dashboard
+          </Link>
+          <UserMenu email={user.email} />
+        </nav>
+      </header>
+      <main className="flex-1">
+        <Outlet />
+      </main>
+    </div>
+  );
+}

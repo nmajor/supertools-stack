@@ -14,6 +14,25 @@ export function runCmd(cmd, args, opts = {}) {
 }
 
 /**
+ * Like runCmd but captures stdout/stderr instead of inheriting. Resolves with
+ * { stdout, stderr, code }. Rejects only on spawn error — a non-zero exit code
+ * is returned to the caller so it can decide how to react (the harness uses
+ * this to parse `wrangler d1 execute --json` output even when wrangler emits
+ * warnings on stderr that wouldn't trip a non-zero exit).
+ */
+export function runCmdCapture(cmd, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (b) => { stdout += b.toString(); });
+    child.stderr.on('data', (b) => { stderr += b.toString(); });
+    child.on('error', reject);
+    child.on('exit', (code) => resolve({ stdout, stderr, code }));
+  });
+}
+
+/**
  * Spawn a background process in its own process group so we can cleanly tear
  * down the whole tree on exit. Without `detached: true`, vite/wrangler's
  * grandchildren survive a kill aimed at the immediate child and end up
