@@ -23,10 +23,13 @@
 //   L3.6 — marketing SEO smoke: GET each of the marketing routes (/, /pricing,
 //          /resources, /resources/example-resource, /terms, /privacy) and
 //          assert 200 + a non-empty <title>. The home page additionally must
-//          ship a parseable application/ld+json <script>. Plain HTTP — no
-//          Playwright dep / browser download — because the page bodies are
-//          empty placeholders and there's no UI to interact with. Added with
-//          the 30-marketing install step.
+//          ship a parseable application/ld+json <script>. /terms and /privacy
+//          additionally must ship substantive content from the 50-legal step:
+//          body length >= 1500 chars, >= 5 <h2> headings, and the privacy
+//          page must contain the literal AI-training opt-out clause. Plain
+//          HTTP — no Playwright dep / browser download — because the page
+//          bodies are static SSR'd HTML. Added with the 30-marketing install
+//          step; legal-content checks added with 50-legal.
 //
 // L4 (real Playwright e2e) lands when 30-marketing's pages get actual content
 // and 40-dashboard ships interactive UI. Until then, L3.6's HTTP probe is
@@ -423,6 +426,17 @@ try {
     '/privacy',
   ];
   console.log(`[L3.6] Marketing SEO smoke (${seoPaths.length} paths)...`);
+  // The /terms and /privacy paths are special: the 50-legal install step
+  // ships substantive content there, and we assert it actually shipped (rather
+  // than a previous step's empty placeholder leaking through). The thresholds
+  // below are well above the empty placeholder size (~250 chars rendered) and
+  // well under the templates' real size, so they fail loudly if a future
+  // change accidentally drops the legal content.
+  const LEGAL_PATHS = new Set(['/terms', '/privacy']);
+  const LEGAL_MIN_BODY_CHARS = 1500;
+  const LEGAL_MIN_H2_HEADINGS = 5;
+  const AI_TRAINING_CLAUSE = 'do not use customer data to train AI models';
+
   for (const p of seoPaths) {
     const pageRes = await fetch(`${origin}${p}`);
     if (pageRes.status !== 200) {
@@ -443,6 +457,24 @@ try {
         JSON.parse(ldMatch[1]);
       } catch (e) {
         throw new Error(`L3.6 GET / JSON-LD did not parse: ${e.message}`);
+      }
+    }
+    if (LEGAL_PATHS.has(p)) {
+      if (html.length < LEGAL_MIN_BODY_CHARS) {
+        throw new Error(
+          `L3.6 GET ${p} body too short (${html.length} chars; expected ` +
+          `>=${LEGAL_MIN_BODY_CHARS}) — looks like the empty placeholder`,
+        );
+      }
+      const h2Count = (html.match(/<h2\b/gi) || []).length;
+      if (h2Count < LEGAL_MIN_H2_HEADINGS) {
+        throw new Error(
+          `L3.6 GET ${p} has ${h2Count} <h2> heading(s); expected ` +
+          `>=${LEGAL_MIN_H2_HEADINGS} — legal template appears truncated`,
+        );
+      }
+      if (p === '/privacy' && !html.includes(AI_TRAINING_CLAUSE)) {
+        throw new Error('L3.6 GET /privacy missing AI-training opt-out clause');
       }
     }
     console.log(`       OK (${p} title="${titleMatch[1].trim()}")`);
