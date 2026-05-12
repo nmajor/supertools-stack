@@ -1,0 +1,85 @@
+// Security headers — applied to every response by the worker entry's wrapper
+// in src/server.ts.
+//
+// Values reflect Nick's personal stack (per HANDOFF.md "Stack decisions"):
+//   - Rybbit (analytics) at https://rybbit.nmajor.net is allow-listed for
+//     script-src and connect-src.
+//   - Chatwoot (support chat) at https://chatwoot.nmajor.net is allow-listed
+//     for script-src, connect-src, and frame-src (chat widget iframe).
+//
+// `'unsafe-inline'` is set on both script-src and style-src for now:
+//   - style-src: Tailwind's runtime style injection and any inline
+//     style="..." attributes our components emit need it. Removing it would
+//     require a nonce-per-request scheme — not worth the complexity here.
+//   - script-src: TanStack Start's hydration script is currently emitted as
+//     an inline <script>. When TanStack ships SRI/nonce support we can drop
+//     the unsafe-inline and switch to a per-request nonce.
+//
+// Skipped in dev mode (import.meta.env.DEV): the strict CSP breaks Vite's
+// HMR WebSocket and dev-time module preload. In prod the bundle is static
+// so the CSP holds.
+
+const CSP_DIRECTIVES = [
+  // Default to same-origin only; specific resource types override below.
+  "default-src 'self'",
+  // 'unsafe-inline' needed for TanStack Start's inline hydration script.
+  // Allow Rybbit + Chatwoot for analytics / chat widget injection.
+  "script-src 'self' 'unsafe-inline' https://rybbit.nmajor.net https://chatwoot.nmajor.net",
+  // 'unsafe-inline' needed for Tailwind / component inline style attributes.
+  "style-src 'self' 'unsafe-inline'",
+  // data: URIs for inlined SVG; https: catches any remote image we end up
+  // hot-linking. Tighten per-app once the asset surface is known.
+  "img-src 'self' data: https:",
+  // Same external hosts as script-src — both Rybbit and Chatwoot make XHR /
+  // fetch calls back to their respective backends.
+  "connect-src 'self' https://rybbit.nmajor.net https://chatwoot.nmajor.net",
+  // Only the Chatwoot iframe is allowed.
+  "frame-src 'self' https://chatwoot.nmajor.net",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join('; ');
+
+const HEADERS: Array<readonly [string, string]> = [
+  ['Content-Security-Policy', CSP_DIRECTIVES],
+  // HSTS — 2-year max-age, includes subdomains, preload-eligible.
+  ['Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload'],
+  ['X-Frame-Options', 'DENY'],
+  ['X-Content-Type-Options', 'nosniff'],
+  ['Referrer-Policy', 'strict-origin-when-cross-origin'],
+  // Disable powerful APIs we don't use.
+  ['Permissions-Policy', 'camera=(), microphone=(), geolocation=()'],
+];
+
+/**
+ * Returns a new Response with the security headers applied. The original
+ * response's body and status are preserved; existing headers win on conflict
+ * (a downstream handler that already set, e.g., a stricter CSP wins).
+ *
+ * Wrapping rather than mutating because workerd's Response headers are not
+ * mutable post-construction in all code paths.
+ */
+export function applySecurityHeaders(response: Response): Response {
+  const newHeaders = new Headers(response.headers);
+  for (const [name, value] of HEADERS) {
+    if (!newHeaders.has(name)) newHeaders.set(name, value);
+  }
+  // 304 / 204 responses have a null body — preserve that.
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: newHeaders,
+  });
+}
+
+/**
+ * Same as applySecurityHeaders, but skips entirely in dev mode. Use this in
+ * the worker entry; the unconditional variant is for tests / preview builds
+ * that want to verify the header set against a known production-ish response.
+ */
+export function applySecurityHeadersIfProd(response: Response): Response {
+  if (import.meta.env?.DEV) return response;
+  return applySecurityHeaders(response);
+}
+
+// Exported for tests / harness gating.
+export const SECURITY_HEADER_NAMES = HEADERS.map(([n]) => n);

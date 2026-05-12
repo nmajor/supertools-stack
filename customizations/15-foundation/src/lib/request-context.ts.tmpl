@@ -1,0 +1,53 @@
+// Per-request context, propagated through async boundaries via AsyncLocalStorage.
+// The worker entry (src/server.ts) opens a store at the top of each fetch with
+// `{ requestId }`, and downstream code (loaders, server functions, log calls)
+// reads it back with `getRequestContext()` — no need to thread the request
+// object through every call site.
+//
+// AsyncLocalStorage is available in workerd via the `nodejs_compat` flag, which
+// the C3 scaffold sets in wrangler.jsonc by default. See HANDOFF.md "Stack
+// scope".
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+export type RequestContext = {
+  requestId: string;
+  userId?: string;
+};
+
+const storage = new AsyncLocalStorage<RequestContext>();
+
+/**
+ * Run `fn` with the given request context active. All async work spawned
+ * inside `fn` sees the same store via `getRequestContext()`.
+ */
+export function withRequestContext<T>(ctx: RequestContext, fn: () => T): T {
+  return storage.run(ctx, fn);
+}
+
+/**
+ * Read the current request context, or `undefined` if called outside one.
+ * Returning undefined (not throwing) is deliberate: module-scope code, build-
+ * time imports, and tests that don't open a store should not crash on read.
+ */
+export function getRequestContext(): RequestContext | undefined {
+  return storage.getStore();
+}
+
+/**
+ * Convenience accessor — returns the active request ID, or `undefined`
+ * outside a context. Used by middleware to set the `X-Request-Id` response
+ * header.
+ */
+export function getRequestId(): string | undefined {
+  return storage.getStore()?.requestId;
+}
+
+/**
+ * Generate a 12-char request ID. `crypto.randomUUID()` produces a 36-char
+ * UUID; we strip dashes and take the first 12 hex chars (~48 bits of entropy)
+ * — enough to disambiguate concurrent in-flight requests in logs while staying
+ * short enough to scan visually.
+ */
+export function newRequestId(): string {
+  return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+}

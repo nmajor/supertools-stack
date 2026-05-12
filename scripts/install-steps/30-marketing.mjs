@@ -3,9 +3,6 @@
 // What this step does:
 //   1. Render customizations/30-marketing/ into the project:
 //      - src/components/{MarketingNav,Footer,SeoHead}.tsx
-//      - src/routes/__root.tsx (overwrites the scaffold's branded version
-//        with a neutral one — no nav/footer in the root, since each route
-//        group provides its own)
 //      - src/routes/_marketing/route.tsx (pathless layout: nav + outlet +
 //        footer for marketing pages only; auth pages under (auth)/ keep
 //        their own presentation)
@@ -17,6 +14,11 @@
 //        marketing surface)
 //      - src/components/Header.tsx, Footer.tsx, ThemeToggle.tsx (the scaffold
 //        rendered these from __root; with the new __root they're orphans)
+//
+// Note: __root.tsx is owned by 15-foundation (which runs first by numeric
+// order). That layout file used to live here; it was lifted out so the
+// foundation step could wire stack-wide error boundaries and 404 pages without
+// duplicating layout logic across steps.
 //
 // What this step deliberately does NOT ship:
 //   - Default content of any kind. Pages are 1-line placeholders ("Home goes
@@ -52,7 +54,7 @@ const repoRoot = path.resolve(here, '..', '..');
 const TEMPLATE_DIR = path.join(repoRoot, 'customizations', '30-marketing');
 
 export const id = '30-marketing';
-export const requires = ['00-scaffold', '10-db', '20-auth'];
+export const requires = ['00-scaffold', '15-foundation', '10-db', '20-auth'];
 export const provides = ['marketing-pages', 'seo-head'];
 
 export async function detect(ctx) {

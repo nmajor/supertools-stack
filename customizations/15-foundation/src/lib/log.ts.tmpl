@@ -1,0 +1,71 @@
+// Structured logging — one JSON line per call to stdout. Cloudflare Workers'
+// built-in observability captures stdout, so this works in prod for free; no
+// pino/winston dep. Each line carries the per-request context (requestId +
+// userId) from AsyncLocalStorage so logs are correlatable without callers
+// having to plumb the request through.
+//
+// Levels are a simple numeric ladder: debug < info < warn < error. Anything
+// below the configured `LOG_LEVEL` (default `info`) is dropped before the
+// stringify cost. Set `LOG_LEVEL=debug` in `.dev.vars` for noisy local work.
+//
+// Reads `LOG_LEVEL` from the `cloudflare:workers` env proxy at first use, then
+// caches. We don't read at module-import time because in some bundling modes
+// `env` is hydrated after import.
+import { env } from 'cloudflare:workers';
+import { getRequestContext } from './request-context';
+
+type Level = 'debug' | 'info' | 'warn' | 'error';
+type LogContext = Record<string, unknown>;
+
+const LEVEL_RANK: Record<Level, number> = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+};
+
+let cachedThreshold: number | null = null;
+
+function thresholdRank(): number {
+  if (cachedThreshold !== null) return cachedThreshold;
+  const raw =
+    (env as unknown as { LOG_LEVEL?: string })?.LOG_LEVEL?.toLowerCase() ??
+    'info';
+  cachedThreshold = LEVEL_RANK[raw as Level] ?? LEVEL_RANK.info;
+  return cachedThreshold;
+}
+
+function emit(level: Level, msg: string, ctx?: LogContext): void {
+  if (LEVEL_RANK[level] < thresholdRank()) return;
+  const reqCtx = getRequestContext();
+  const line = {
+    time: new Date().toISOString(),
+    level,
+    msg,
+    ...(reqCtx ? { requestId: reqCtx.requestId, ...(reqCtx.userId ? { userId: reqCtx.userId } : {}) } : {}),
+    ...(ctx ?? {}),
+  };
+  // Single console.log per line — workerd flushes per call. Stringify failures
+  // (e.g. circular refs in ctx) fall back to a marker line so the log is never
+  // silently dropped.
+  try {
+    console.log(JSON.stringify(line));
+  } catch (e) {
+    console.log(JSON.stringify({
+      time: line.time,
+      level: 'error',
+      msg: 'log: JSON.stringify failed',
+      err: e instanceof Error ? e.message : String(e),
+      originalMsg: msg,
+    }));
+  }
+}
+
+export const log = {
+  debug: (msg: string, ctx?: LogContext) => emit('debug', msg, ctx),
+  info: (msg: string, ctx?: LogContext) => emit('info', msg, ctx),
+  warn: (msg: string, ctx?: LogContext) => emit('warn', msg, ctx),
+  error: (msg: string, ctx?: LogContext) => emit('error', msg, ctx),
+};
+
+export type Logger = typeof log;

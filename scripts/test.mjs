@@ -53,6 +53,16 @@
 //          The L3.5 cookie is dead by L3.8 (L3.7 deletes that user), so this
 //          layer signs up its own throwaway user for (b)–(d). Added with the
 //          40-dashboard install step.
+//   L3.9 — Foundation gates (added with 15-foundation):
+//          (a) GET / response has X-Request-Id matching /^[a-f0-9]{12}$/ —
+//              the request-id middleware in src/server.ts is the source.
+//          (b) GET /nonexistent-${ts} renders the root notFoundComponent
+//              (body contains "Page not found").
+//          (c) src/lib/security-headers.ts source-declares each required
+//              header. (We don't probe the live response — security headers
+//              are skipped under `vite dev` to keep HMR working. The
+//              source-content check is the contract gate; prod-side
+//              observation is done manually via `npm run preview`.)
 //
 // L4 (real Playwright e2e) lands when 30-marketing's pages get actual content
 // and 40-dashboard ships interactive UI. Until then, L3.6's HTTP probe is
@@ -751,6 +761,70 @@ try {
     );
   }
   console.log('       (d) OK — authed home nav has no hardcoded Sign-in link');
+
+  // ─── L3.9 — Foundation gates ───────────────────────────────────────────
+  // (a) GET / response has an X-Request-Id header matching the 12-char shape
+  //     emitted by request-context.newRequestId().
+  // (b) GET /nonexistent-... renders the 404 ErrorPage (body contains "Page
+  //     not found").
+  // (c) The rendered src/lib/security-headers.ts declares each required
+  //     header name with the expected value. Probing the live response would
+  //     require a separate `vite preview` boot — security headers are
+  //     deliberately skipped under `vite dev` to keep HMR working. The source
+  //     check is the contract gate; the prod-side observation is done
+  //     manually via the preview server (see HANDOFF / install-step notes).
+  console.log('[L3.9] Foundation gates (request-id, 404 page, security headers contract)...');
+
+  // (a) Request ID header. We've already fetched url many times above; do a
+  //     fresh GET so we can examine the actual response headers verbatim.
+  const ridRes = await fetch(url);
+  const requestId = ridRes.headers.get('x-request-id');
+  if (!requestId || !/^[a-f0-9]{12}$/.test(requestId)) {
+    throw new Error(
+      `L3.9(a) GET / missing or malformed X-Request-Id header; got ${JSON.stringify(requestId)}. ` +
+      `Did src/server.ts wire newRequestId() into the response?`,
+    );
+  }
+  console.log(`       (a) OK — X-Request-Id=${requestId}`);
+
+  // (b) 404 page renders the ErrorPage body. The TanStack Router renders the
+  //     root route's notFoundComponent for any unmatched URL.
+  const notFoundPath = `/nonexistent-${Date.now()}`;
+  const nfRes = await fetch(`${origin}${notFoundPath}`);
+  // Status code can be 200 (TanStack's client-side error route returns 200
+  // with the error UI) OR 404 — accept either. The body is the contract.
+  const nfHtml = await nfRes.text();
+  if (!nfHtml.includes('Page not found')) {
+    throw new Error(
+      `L3.9(b) GET ${notFoundPath} did not render 404 ErrorPage (no "Page not found" in body). ` +
+      `Did __root.tsx wire notFoundComponent? status=${nfRes.status}`,
+    );
+  }
+  console.log(`       (b) OK — 404 page rendered for ${notFoundPath} (status ${nfRes.status})`);
+
+  // (c) Security headers contract check — read the rendered source and assert
+  //     each required header is present. Verifies the install step rendered
+  //     the customizations correctly; the prod-mode side is exercised
+  //     manually via the preview server.
+  const secFile = path.join(target, 'src', 'lib', 'security-headers.ts');
+  const secSrc = await fs.readFile(secFile, 'utf-8');
+  const REQUIRED_HEADERS = [
+    ['Content-Security-Policy', 'rybbit.nmajor.net'],
+    ['Content-Security-Policy', 'chatwoot.nmajor.net'],
+    ['Strict-Transport-Security', 'max-age=63072000'],
+    ['X-Frame-Options', 'DENY'],
+    ['X-Content-Type-Options', 'nosniff'],
+    ['Referrer-Policy', 'strict-origin-when-cross-origin'],
+    ['Permissions-Policy', 'camera=()'],
+  ];
+  for (const [name, fragment] of REQUIRED_HEADERS) {
+    if (!secSrc.includes(name) || !secSrc.includes(fragment)) {
+      throw new Error(
+        `L3.9(c) security-headers.ts is missing "${name}" with fragment "${fragment}"`,
+      );
+    }
+  }
+  console.log(`       (c) OK — security-headers.ts declares ${REQUIRED_HEADERS.length} required directives`);
 
   ok = true;
 } catch (e) {

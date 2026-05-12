@@ -7,11 +7,20 @@
 // and a Footer (with "Your name here" boilerplate) plus a ThemeToggle. All
 // three are removed here — see 30-marketing.mjs which deletes the now-unused
 // component files. The HeadContent / Scripts / appCss wiring is preserved.
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router';
+//
+// Owned by 15-foundation (lifted out of 30-marketing): this file also wires
+// the global error boundary (`errorComponent`) and the 404 page
+// (`notFoundComponent`), so they're stack-wide, not marketing-specific.
+import {
+  HeadContent,
+  Scripts,
+  createRootRoute,
+} from '@tanstack/react-router';
 import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools';
 import { TanStackDevtools } from '@tanstack/react-devtools';
 
 import appCss from '../styles.css?url';
+import { ErrorPage } from '../components/ErrorPage';
 
 export const Route = createRootRoute({
   head: () => ({
@@ -31,6 +40,15 @@ export const Route = createRootRoute({
       },
     ],
   }),
+  // Uncaught errors in any route loader / component bubble up to here. Devtools
+  // overlay still shows in dev; this is the prod fallback.
+  errorComponent: () => (
+    <ErrorPage status={500} title="Something went wrong" />
+  ),
+  // Hit when no route matches.
+  notFoundComponent: () => (
+    <ErrorPage status={404} title="Page not found" />
+  ),
   shellComponent: RootDocument,
 });
 

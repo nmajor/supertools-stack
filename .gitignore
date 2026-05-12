@@ -6,3 +6,6 @@ node_modules/
 *.swo
 .idea/
 dist/
+.env
+.env.local
+.dev.vars

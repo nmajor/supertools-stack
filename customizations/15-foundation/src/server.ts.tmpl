@@ -1,0 +1,69 @@
+// Worker entry — replaces TanStack Start's default `@tanstack/react-start/server-entry`
+// so we can wrap every request with:
+//   1. A generated request ID, opened in AsyncLocalStorage for downstream code.
+//   2. An access log line (info) at the start and end of the request.
+//   3. Security headers applied to the response (skipped in dev — see
+//      lib/security-headers.ts).
+//   4. An `X-Request-Id` header on the response so the client can echo it back
+//      when reporting bugs.
+//
+// wrangler.jsonc's `"main"` is repointed here by the 15-foundation install
+// step. The TanStack Start handler is still used — we just wrap its fetch().
+import { createStartHandler, defaultStreamHandler } from '@tanstack/react-start/server';
+import { withRequestContext, newRequestId } from './lib/request-context';
+import { applySecurityHeadersIfProd } from './lib/security-headers';
+import { log } from './lib/log';
+
+const startFetch = createStartHandler(defaultStreamHandler);
+
+export default {
+  async fetch(request: Request, ...rest: unknown[]): Promise<Response> {
+    const requestId = newRequestId();
+    const url = new URL(request.url);
+    const started = Date.now();
+
+    return await withRequestContext({ requestId }, async () => {
+      log.info('request.start', { method: request.method, path: url.pathname });
+      let response: Response;
+      try {
+        // The TanStack Start handler accepts (request, opts?) — pass through
+        // any extra arguments workerd hands us (env / ctx) just in case
+        // they're load-bearing for future Start versions.
+        response = await (startFetch as unknown as (
+          req: Request,
+          ...r: unknown[]
+        ) => Promise<Response> | Response)(request, ...rest);
+      } catch (err) {
+        log.error('request.unhandled', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+        // Last-resort fallback — the root route's errorComponent handles
+        // in-React errors, but a throw in the handler itself never reaches
+        // React. Return a plain text 500.
+        response = new Response('Internal Server Error', {
+          status: 500,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        });
+      }
+
+      // Always attach the request ID so the client can quote it back. Use a
+      // mutable Response wrapper because the body has likely already been
+      // consumed into a stream.
+      const withHeaders = new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+      withHeaders.headers.set('X-Request-Id', requestId);
+      const final = applySecurityHeadersIfProd(withHeaders);
+
+      log.info('request.end', {
+        method: request.method,
+        path: url.pathname,
+        status: final.status,
+        durMs: Date.now() - started,
+      });
+      return final;
+    });
+  },
+};
