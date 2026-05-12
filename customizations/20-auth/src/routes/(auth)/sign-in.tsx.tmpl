@@ -103,6 +103,21 @@ function SignIn() {
             {pending ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+        {/*
+          "Forgot password?" link — points at the route shipped by
+          26-password-reset. If 26 isn't installed the link 404s, which is
+          acceptable: the link is harmless when the feature isn't wired up,
+          and trying to conditionally render it would require a runtime
+          capability flag that doesn't otherwise exist in the stack.
+        */}
+        <p className="mt-4 text-center text-sm text-gray-600">
+          <a
+            href="/forgot-password"
+            className="text-blue-600 underline hover:text-blue-700"
+          >
+            Forgot password?
+          </a>
+        </p>
         <p className="mt-6 text-center text-sm text-gray-600">
           New here?{' '}
           <a
