@@ -83,6 +83,21 @@
 //              source-content check is the contract gate; prod-side
 //              observation is done manually via `npm run preview`.)
 //
+//   L3.12 — Auth hardening gates (added with 27-auth-hardening):
+//          (a/structural) wrangler.jsonc declares the AUTH_RATE_LIMITER
+//              ratelimit binding; the catch-all route src interposes the
+//              limit check on /api/auth/sign-up/email|sign-in/email|
+//              request-password-reset.
+//          (a/runtime) hammer /api/auth/sign-in/email 20x with bogus creds
+//              and a pinned cf-connecting-ip. If a 429 lands within the
+//              window the limit binding is being honored; otherwise we log
+//              that miniflare doesn't enforce it locally and move on (the
+//              structural gate is the contract; prod observation is manual).
+//          (b) sign-up without X-Turnstile-Token -> 400 "Captcha required".
+//              Skipped when TURNSTILE_SECRET isn't provisioned (the L3.12
+//              preflight reads the repo's top-level .env and writes the
+//              keys into the test project's .dev.vars).
+//
 // L4 (real Playwright e2e) lands when 30-marketing's pages get actual content
 // and 40-dashboard ships interactive UI. Until then, L3.6's HTTP probe is
 // sufficient: it asserts route registration, head() wiring, and JSON-LD
@@ -365,6 +380,45 @@ try {
     }
   }
 
+  // L3.12 preflight — provision Turnstile keys in the test project's
+  // .dev.vars BEFORE vite dev boots. The 27-auth-hardening hook in
+  // src/lib/auth.ts reads TURNSTILE_SECRET at request time; the sign-up
+  // form's SSR loader reads TURNSTILE_SITE_KEY to decide whether to render
+  // the widget.
+  //
+  // We deliberately use Cloudflare's well-known TESTING keys here (NOT the
+  // real production keys from the repo's .env):
+  //   site key      1x00000000000000000000AA          (always passes)
+  //   secret        1x0000000000000000000000000000000AA (always passes)
+  // These keys are documented at https://developers.cloudflare.com/turnstile/
+  // troubleshooting/testing/. /siteverify accepts ANY response token when
+  // verifying with the test secret, which means:
+  //   - L3.5 / L3.7 / L3.8 (the existing sign-up flows) can pass any string
+  //     as X-Turnstile-Token and the hook accepts. We update those callers
+  //     below to send `X-Turnstile-Token: testing` for that reason.
+  //   - L3.12(b) sends NO header at all -> still hits the "missing token"
+  //     branch -> 400 "Captcha required". Negative gate works regardless of
+  //     which secret is active.
+  // The real Turnstile keys from the repo's .env are used by the MANUAL
+  // Playwright probe (not by the automated harness) — that probe exercises
+  // the full widget-render + token-issue + siteverify round-trip end-to-end.
+  const turnstileTestSiteKey = '1x00000000000000000000AA';
+  const turnstileTestSecret = '1x0000000000000000000000000000000AA';
+  const harnessTurnstileToken = 'XXXX.DUMMY.TOKEN.XXXX'; // testing-secret accepts anything
+  {
+    const devVarsPath = path.join(target, '.dev.vars');
+    let devVarsText = await fs.readFile(devVarsPath, 'utf-8').catch(() => '');
+    if (devVarsText && !devVarsText.endsWith('\n')) devVarsText += '\n';
+    if (!/^TURNSTILE_SITE_KEY=/m.test(devVarsText)) {
+      devVarsText += `TURNSTILE_SITE_KEY=${turnstileTestSiteKey}\n`;
+    }
+    if (!/^TURNSTILE_SECRET=/m.test(devVarsText)) {
+      devVarsText += `TURNSTILE_SECRET=${turnstileTestSecret}\n`;
+    }
+    await fs.writeFile(devVarsPath, devVarsText);
+    console.log('[L3.12-preflight] wrote CF testing TURNSTILE_* keys into test project .dev.vars');
+  }
+
   // L3.10 preflight — plant a throwaway TanStack server route that exercises
   // src/lib/email.ts's no-op path. The router plugin generates routeTree.gen.ts
   // during `vite build` (L2 below) and again on dev-server boot — we want both
@@ -455,6 +509,11 @@ export const Route = createFileRoute('/api/harness-email-test')({
     headers: {
       'Content-Type': 'application/json',
       Origin: origin,
+      // L3.12 preflight wrote the CF testing Turnstile secret into the
+      // project's .dev.vars; any non-empty token is accepted by /siteverify
+      // when verifying with that secret. See preflight block above for the
+      // full rationale.
+      'X-Turnstile-Token': harnessTurnstileToken,
     },
     body: JSON.stringify({
       email: signupEmail,
@@ -584,7 +643,11 @@ export const Route = createFileRoute('/api/harness-email-test')({
   console.log(`       Sign-up POST /api/auth/sign-up/email (${delEmail})...`);
   const delSignupRes = await fetch(`${url}api/auth/sign-up/email`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: origin },
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: origin,
+      'X-Turnstile-Token': harnessTurnstileToken,
+    },
     body: JSON.stringify({ email: delEmail, password: delPassword, name: 'Delete Me' }),
   });
   if (!delSignupRes.ok) {
@@ -732,7 +795,11 @@ export const Route = createFileRoute('/api/harness-email-test')({
   const ssoEmail = `redirect-test-${Date.now()}@example.local`;
   const ssoSignupRes = await fetch(`${url}api/auth/sign-up/email`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: origin },
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: origin,
+      'X-Turnstile-Token': harnessTurnstileToken,
+    },
     body: JSON.stringify({ email: ssoEmail, password: 'redirect-test-password', name: 'Redirect Test' }),
   });
   if (!ssoSignupRes.ok) {
@@ -948,6 +1015,106 @@ export const Route = createFileRoute('/api/harness-email-test')({
     throw new Error(`L3.10 sendEmail did not return a noop id; got ${JSON.stringify(probeBody)}`);
   }
   console.log(`       (runtime) OK — sendEmail returned ${probeBody.id} (noop transport)`);
+
+  // ─── L3.12 — auth hardening (rate limit + Turnstile) ───────────────────
+  // Two probes, both keyed on the 27-auth-hardening install step's outputs:
+  //   (a) Per-IP rate limit on /api/auth/sign-in/email. We hammer the
+  //       endpoint with bogus credentials (so each call is cheap and
+  //       doesn't pollute the db) and look for a 429 within the threshold.
+  //       Cloudflare's local dev (miniflare / workerd) DOES NOT enforce the
+  //       ratelimit binding in current versions — calls go through without
+  //       limiting. We detect this case (no 429 inside the window) and
+  //       degrade to a structural gate: assert the AUTH_RATE_LIMITER binding
+  //       is declared in wrangler.jsonc and the catch-all route source
+  //       interposes the limit check. Production behavior is observed via
+  //       a manual probe against a real CF deploy (out of scope here).
+  //   (b) Turnstile-required: POST /api/auth/sign-up/email with NO
+  //       X-Turnstile-Token header. With TURNSTILE_SECRET set, the
+  //       Better Auth hook returns 400 with the message "Captcha required".
+  //       Skipped when the secret isn't provisioned.
+  console.log('[L3.12] Auth hardening (rate limit + Turnstile)...');
+
+  // (a) Structural gate first — these run regardless of miniflare's runtime
+  // behavior, so we always have a baseline contract.
+  const wranglerPath = path.join(target, 'wrangler.jsonc');
+  const wranglerSrc = await fs.readFile(wranglerPath, 'utf-8');
+  if (!wranglerSrc.includes('"AUTH_RATE_LIMITER"')) {
+    throw new Error('L3.12(a/structural) wrangler.jsonc missing AUTH_RATE_LIMITER ratelimit binding');
+  }
+  if (!/"ratelimits"\s*:/.test(wranglerSrc)) {
+    throw new Error('L3.12(a/structural) wrangler.jsonc missing top-level ratelimits block');
+  }
+  const catchallPath = path.join(target, 'src', 'routes', 'api', 'auth', '$.ts');
+  const catchallSrc = await fs.readFile(catchallPath, 'utf-8');
+  if (!catchallSrc.includes('AUTH_RATE_LIMITER') || !catchallSrc.includes("'/api/auth/sign-up/email'")) {
+    throw new Error('L3.12(a/structural) catch-all route src missing rate-limit interposition');
+  }
+  console.log('       (a/structural) OK — AUTH_RATE_LIMITER binding + interposition present');
+
+  // (a) Runtime probe. Hammer /api/auth/sign-in/email with bogus credentials.
+  // 20 attempts: with a limit of 10/60s we expect a 429 by ~attempt 11 if
+  // miniflare honors the binding; otherwise we expect 20 401s (bad creds).
+  // Either outcome is acceptable as a baseline; we just need to NOT throw
+  // and to log which path we hit.
+  let firstRateLimitedAt = null;
+  let nonRateLimitedStatuses = [];
+  for (let i = 1; i <= 20; i++) {
+    const r = await fetch(`${url}api/auth/sign-in/email`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: origin,
+        // Pin a deterministic IP so the bucket key is stable (miniflare
+        // may not set cf-connecting-ip itself in local mode).
+        'cf-connecting-ip': '203.0.113.42',
+      },
+      body: JSON.stringify({ email: 'ratelimit-probe@example.local', password: 'wrong-password' }),
+    });
+    if (r.status === 429) {
+      firstRateLimitedAt = i;
+      break;
+    }
+    nonRateLimitedStatuses.push(r.status);
+  }
+  if (firstRateLimitedAt !== null) {
+    console.log(`       (a/runtime) OK — first 429 at attempt ${firstRateLimitedAt} (miniflare HONORS rate-limit binding)`);
+  } else {
+    const uniqueStatuses = [...new Set(nonRateLimitedStatuses)];
+    console.log(
+      `       (a/runtime) NOTE — no 429 in 20 attempts (statuses seen: ${uniqueStatuses.join(', ')}). ` +
+      `Miniflare/workerd does NOT enforce the ratelimit binding locally; ` +
+      `production behavior must be verified against a real CF deploy.`,
+    );
+  }
+
+  // (b) Turnstile-required gate. The preflight always writes TURNSTILE_SECRET
+  // (using CF's testing secret), so this probe always runs. We POST with NO
+  // X-Turnstile-Token header and expect 400 "Captcha required".
+  const noTokenRes = await fetch(`${url}api/auth/sign-up/email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin },
+    body: JSON.stringify({
+      email: `captcha-required-${Date.now()}@example.local`,
+      password: 'captcha-required-password',
+      name: 'Captcha Required',
+    }),
+  });
+  if (noTokenRes.status !== 400) {
+    const body = await noTokenRes.text().catch(() => '');
+    throw new Error(
+      `L3.12(b) sign-up without X-Turnstile-Token should return 400, got ${noTokenRes.status}. ` +
+      `Body: ${body.slice(0, 300)}`,
+    );
+  }
+  const noTokenBody = await noTokenRes.json().catch(() => ({}));
+  const noTokenMsg =
+    (typeof noTokenBody?.message === 'string' && noTokenBody.message) ||
+    (typeof noTokenBody?.error?.message === 'string' && noTokenBody.error.message) ||
+    JSON.stringify(noTokenBody);
+  if (!/captcha required/i.test(noTokenMsg)) {
+    throw new Error(`L3.12(b) sign-up 400 body did not mention captcha; got: ${noTokenMsg}`);
+  }
+  console.log(`       (b) OK — sign-up without token rejected (400 "${noTokenMsg}")`);
 
   ok = true;
 } catch (e) {

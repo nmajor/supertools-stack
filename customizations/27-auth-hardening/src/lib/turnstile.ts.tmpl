@@ -1,0 +1,88 @@
+// Cloudflare Turnstile server-side verification.
+//
+// The widget renders client-side via the Turnstile JS API (loaded from
+// challenges.cloudflare.com). On a successful challenge the widget yields a
+// short-lived response token, which we POST to the /siteverify endpoint
+// alongside our secret to confirm the token is real, fresh, bound to our
+// sitekey, and (when supplied) issued for this client IP.
+//
+// Used by 20-auth's catch-all route hook to gate /api/auth/sign-up/email.
+// We deliberately verify in the auth hook (not on a separate endpoint) so
+// the token is bound to the sign-up action — a stolen token can't be
+// replayed against any other handler.
+//
+// We don't pin a timeout on this fetch: Turnstile's /siteverify is fast
+// (<200ms typical) and a hung verification surfaces as a stuck POST that
+// the worker's overall request timeout will kill. Adding our own AbortSignal
+// here would just trade one failure mode for another.
+import { log } from './log';
+
+const SITEVERIFY_URL =
+  'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+
+interface TurnstileSiteverifyResponse {
+  success: boolean;
+  'error-codes'?: string[];
+  challenge_ts?: string;
+  hostname?: string;
+  action?: string;
+  cdata?: string;
+}
+
+/**
+ * Verify a Turnstile response token against Cloudflare's siteverify API.
+ *
+ * Returns true iff the token is genuine. Logs (at warn) on any failure so
+ * operators can distinguish "bad request shape" from "captcha refused" from
+ * "Turnstile API itself unreachable" in worker logs.
+ *
+ * @param token   The cf-turnstile-response value the widget yielded.
+ * @param ip      Client IP (cf-connecting-ip in CF). Optional but recommended;
+ *                Turnstile uses it as an extra validity signal.
+ * @param secret  The Turnstile secret for this widget (per-environment).
+ */
+export async function verifyTurnstile(
+  token: string,
+  ip: string | null,
+  secret: string,
+): Promise<boolean> {
+  if (!token) {
+    log.warn('turnstile.missing_token');
+    return false;
+  }
+  const body = new URLSearchParams();
+  body.set('secret', secret);
+  body.set('response', token);
+  if (ip) body.set('remoteip', ip);
+
+  let res: Response;
+  try {
+    res = await fetch(SITEVERIFY_URL, {
+      method: 'POST',
+      body,
+    });
+  } catch (e) {
+    log.warn('turnstile.fetch_failed', {
+      err: e instanceof Error ? e.message : String(e),
+    });
+    return false;
+  }
+  if (!res.ok) {
+    log.warn('turnstile.http_error', { status: res.status });
+    return false;
+  }
+  let json: TurnstileSiteverifyResponse;
+  try {
+    json = (await res.json()) as TurnstileSiteverifyResponse;
+  } catch (e) {
+    log.warn('turnstile.parse_failed', {
+      err: e instanceof Error ? e.message : String(e),
+    });
+    return false;
+  }
+  if (!json.success) {
+    log.warn('turnstile.rejected', { errorCodes: json['error-codes'] ?? [] });
+    return false;
+  }
+  return true;
+}

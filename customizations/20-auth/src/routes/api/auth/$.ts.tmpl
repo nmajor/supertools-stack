@@ -8,14 +8,89 @@
 // File extension is `.ts` (not `.tsx`): no JSX, no React. Per Better Auth's
 // TanStack Start integration docs and the scaffold's pure-TS server-route
 // convention.
+//
+// ─── 27-auth-hardening: per-IP rate limiting ────────────────────────────────
+// The three high-blast-radius auth POSTs (account creation, credential check,
+// password-reset request) get a per-IP rate-limit check BEFORE Better Auth
+// sees them. Implementation lives here (not as a Better Auth hook) because:
+//   - Cloudflare's rate-limit binding (env.AUTH_RATE_LIMITER) is a Workers
+//     runtime API exposed via `cloudflare:workers`; running it inside Better
+//     Auth's hook would couple the auth runtime to the Workers env shape
+//     unnecessarily.
+//   - We want a clean 429 with a Retry-After header that's easy to read for
+//     downstream clients; Better Auth's hook error path renders its own
+//     APIError JSON shape which doesn't fit "429 + Retry-After" naturally.
+//   - The binding may not exist (e.g., when 20-auth runs without
+//     27-auth-hardening). The optional-chain check below means rate-limit
+//     enforcement is dormant until the binding is provisioned by the
+//     27-auth-hardening install step.
+//
+// Turnstile verification for /sign-up/email lives in src/lib/auth.ts's
+// `hooks.before` (not here) because the strip-token-from-body step needs to
+// happen INSIDE Better Auth's context. See auth.ts for that wiring.
 import { createFileRoute } from '@tanstack/react-router';
+import { env } from 'cloudflare:workers';
 import { auth } from '../../../lib/auth';
+import { log } from '../../../lib/log';
+
+// Paths that get per-IP rate limiting. Exact match on `url.pathname` —
+// Better Auth doesn't normalize trailing slashes here and neither do we.
+const RATE_LIMITED_PATHS: ReadonlySet<string> = new Set([
+  '/api/auth/sign-up/email',
+  '/api/auth/sign-in/email',
+  '/api/auth/request-password-reset',
+]);
+
+interface RateLimiterEnv {
+  AUTH_RATE_LIMITER?: { limit: (input: { key: string }) => Promise<{ success: boolean }> };
+}
+
+async function handleAuth(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  // Rate-limit before delegating. Only POSTs hit these auth endpoints in
+  // normal use, but we don't gate on method — a GET to a rate-limited path
+  // either won't match (Better Auth returns 404) or is equivalent to the
+  // POST for limiting purposes (still cheap to bucket).
+  if (RATE_LIMITED_PATHS.has(url.pathname)) {
+    const limiter = (env as RateLimiterEnv).AUTH_RATE_LIMITER;
+    if (limiter) {
+      const ip = request.headers.get('cf-connecting-ip') ?? 'unknown';
+      const key = `${url.pathname}:${ip}`;
+      try {
+        const { success } = await limiter.limit({ key });
+        if (!success) {
+          log.warn('rate_limit.hit', { path: url.pathname, ip });
+          return new Response(
+            JSON.stringify({
+              error: 'Too many requests. Try again in a minute.',
+            }),
+            {
+              status: 429,
+              headers: {
+                'Content-Type': 'application/json',
+                'Retry-After': '60',
+              },
+            },
+          );
+        }
+      } catch (e) {
+        // The rate-limit binding shouldn't throw, but if it does we'd rather
+        // let the request through than return 500. Log loudly.
+        log.error('rate_limit.error', {
+          path: url.pathname,
+          err: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  }
+  return auth.handler(request);
+}
 
 export const Route = createFileRoute('/api/auth/$')({
   server: {
     handlers: {
-      GET: async ({ request }: { request: Request }) => auth.handler(request),
-      POST: async ({ request }: { request: Request }) => auth.handler(request),
+      GET: async ({ request }: { request: Request }) => handleAuth(request),
+      POST: async ({ request }: { request: Request }) => handleAuth(request),
     },
   },
 });

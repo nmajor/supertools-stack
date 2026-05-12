@@ -1,10 +1,43 @@
 // Sign-up page — basic auth screen styled with plain Tailwind utilities.
 // Card layout, no UI library. Behavior is contract: signUp.email + navigate
 // on success + error banner on failure.
+//
+// ─── 27-auth-hardening: Turnstile ──────────────────────────────────────────
+// When TURNSTILE_SITE_KEY is set on the worker env (set by the harness or by
+// supertools-design's deploy concern when 27-auth-hardening is installed),
+// this form mounts the Cloudflare Turnstile widget and forwards the resulting
+// token to the server as the `X-Turnstile-Token` header. The Better Auth
+// hook in src/lib/auth.ts reads that header and rejects sign-ups without a
+// valid token. When the site key is unset (i.e. 27-auth-hardening not
+// installed, or the env var hasn't been provisioned yet) the widget simply
+// doesn't render — the form continues to work normally, just without captcha.
+//
+// We deliberately pass the token via HEADER, not body, so Better Auth's
+// schema validation never sees it and we don't need to configure
+// `user.additionalFields` to whitelist a non-persisted field.
 import { useState } from 'react';
-import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router';
+import {
+  createFileRoute,
+  redirect,
+  useNavigate,
+  useRouter,
+} from '@tanstack/react-router';
+import { createServerFn } from '@tanstack/react-start';
+import { env } from 'cloudflare:workers';
 import { signUp } from '../../lib/auth-client';
 import { getServerSession } from '../../lib/auth.functions';
+import { Turnstile } from '../../components/Turnstile';
+
+// Server-only — surfaces the public site key (NOT the secret) to the route
+// loader so the client can mount the widget. Returns null when 27-auth-
+// hardening isn't installed / the env var is unset; the form treats null as
+// "no captcha".
+const getTurnstileSiteKey = createServerFn({ method: 'GET' }).handler(
+  async () => {
+    const e = env as unknown as { TURNSTILE_SITE_KEY?: string };
+    return e.TURNSTILE_SITE_KEY ?? null;
+  },
+);
 
 export const Route = createFileRoute('/(auth)/sign-up')({
   component: SignUp,
@@ -19,24 +52,59 @@ export const Route = createFileRoute('/(auth)/sign-up')({
       throw redirect({ to: '/dashboard' });
     }
   },
+  // Surface the Turnstile site key (may be null) to the component via the
+  // loader. Done in a loader (not beforeLoad) so it runs after the auth
+  // check — no point fetching it if we're about to redirect.
+  loader: async () => {
+    const turnstileSiteKey = await getTurnstileSiteKey();
+    return { turnstileSiteKey };
+  },
 });
 
 function SignUp() {
   const navigate = useNavigate();
+  const router = useRouter();
+  const { turnstileSiteKey } = Route.useLoaderData();
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    // Block submission when Turnstile is required but unsolved. The server-
+    // side hook in src/lib/auth.ts is the actual gate — this is just a UX
+    // optimization so the user gets immediate feedback instead of a 400
+    // round-trip.
+    if (turnstileSiteKey && !turnstileToken) {
+      setError('Please complete the captcha before signing up.');
+      return;
+    }
     setPending(true);
     try {
-      const res = await signUp.email({ email, password, name });
+      // Pass the Turnstile token as a header via the second-arg fetchOptions
+      // (Better Auth's client surface). Keeping it out of the body avoids
+      // tripping Better Auth's body-schema validation.
+      const fetchOptions = turnstileToken
+        ? { headers: { 'X-Turnstile-Token': turnstileToken } }
+        : undefined;
+      const res = await signUp.email(
+        { email, password, name },
+        fetchOptions,
+      );
       if (res.error) {
         setError(res.error.message ?? 'Sign-up failed');
+        // A failed sign-up consumes the Turnstile token (tokens are single-
+        // use). Force the user to solve a fresh captcha before retrying.
+        if (turnstileSiteKey) {
+          setTurnstileToken(null);
+          // Bouncing through the router triggers the widget's remount via
+          // its component lifecycle, which gets us a fresh challenge.
+          router.invalidate();
+        }
       } else {
         navigate({ to: '/' });
       }
@@ -113,6 +181,15 @@ function SignUp() {
               autoComplete="new-password"
             />
           </div>
+          {turnstileSiteKey ? (
+            <div>
+              <Turnstile
+                siteKey={turnstileSiteKey}
+                onToken={setTurnstileToken}
+                onExpired={() => setTurnstileToken(null)}
+              />
+            </div>
+          ) : null}
           <button
             type="submit"
             disabled={pending}
