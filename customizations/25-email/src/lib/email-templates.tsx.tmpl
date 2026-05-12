@@ -1,0 +1,132 @@
+// Reusable HTML email layout + plain-text fallback derivation.
+//
+// IMPORTANT — DO NOT use Tailwind classes in email templates.
+// ─────────────────────────────────────────────────────────────────────────
+// Outlook (every version) strips <style> blocks and class-based CSS before
+// rendering. Gmail's web client respects <style> in <head> but its mobile
+// apps don't. The only styles that reliably survive across every major
+// client (Apple Mail, Gmail web, Gmail mobile, Outlook desktop, Outlook
+// web, Yahoo, ProtonMail, etc.) are INLINE STYLES applied directly to each
+// element. So this file hand-writes `style="..."` on each tag. It's
+// repetitive on purpose. Future contributors will be tempted to refactor
+// to Tailwind classes — DON'T. The repetition is the contract.
+//
+// Aesthetic matches the rest of the stack: blue (#2563eb) primary CTA,
+// neutral text (#111827 headings, #4b5563 body), slate-gray secondary
+// (#9ca3af). No drop shadows (Outlook strips them) and no rounded corners
+// beyond 6px (Outlook < 2016 ignores border-radius).
+
+export interface EmailRenderOpts {
+  /** H1 at the top of the body. */
+  heading: string;
+  /**
+   * Body HTML. Already-trusted markup — callers are responsible for escaping
+   * any user-controlled text BEFORE passing it in (use `escapeHtml`). We
+   * deliberately don't escape `body` here so callers can intersperse links
+   * and emphasis.
+   */
+  body: string;
+  /** Optional primary call-to-action button below the body. */
+  cta?: { label: string; url: string };
+  /** Optional footer line, rendered small and gray. Plain text only. */
+  footer?: string;
+  /** Optional preheader — the snippet shown in inbox previews. */
+  preheader?: string;
+}
+
+const FONT_STACK =
+  "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+
+/**
+ * Render a stock email body. Returns a complete HTML document (doctype +
+ * <html> + <body>) suitable for handing straight to the EmailMessage.html
+ * field of an EmailTransport.send call.
+ */
+export function renderEmail(opts: EmailRenderOpts): string {
+  const heading = escapeHtml(opts.heading);
+  // Preheader is the hidden inbox preview text. The trick is a 0-opacity
+  // span; we follow it with a stretch of zero-width spaces so the preview
+  // doesn't bleed into the visible body. Standard pattern across major
+  // email-template generators (Mailchimp, Postmark).
+  const preheader = opts.preheader
+    ? `<div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;">${escapeHtml(opts.preheader)}${'&#847; '.repeat(120)}</div>`
+    : '';
+  const cta = opts.cta
+    ? `<p style="margin: 28px 0 0 0;">
+        <a href="${escapeHtml(opts.cta.url)}" style="display:inline-block;padding:11px 22px;background:#2563eb;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;border-radius:6px;font-family:${FONT_STACK};">${escapeHtml(opts.cta.label)}</a>
+      </p>`
+    : '';
+  const footer = opts.footer
+    ? `<p style="margin: 40px 0 0 0;font-size:12px;line-height:1.5;color:#9ca3af;font-family:${FONT_STACK};">${escapeHtml(opts.footer)}</p>`
+    : '';
+
+  // The outer <body> uses a neutral background so dark-mode clients (Apple
+  // Mail in particular) don't invert the inner card to something illegible.
+  // The inner div is the visible card; we cap width at 540px because anything
+  // wider gets awkward on phones.
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>${heading}</title>
+</head>
+<body style="margin:0;padding:0;background:#f9fafb;font-family:${FONT_STACK};color:#111827;">
+${preheader}
+<div style="max-width:540px;margin:0 auto;padding:32px 24px;background:#ffffff;">
+  <h1 style="margin:0 0 16px 0;font-size:20px;line-height:1.3;font-weight:600;color:#111827;font-family:${FONT_STACK};">${heading}</h1>
+  <div style="font-size:14px;line-height:1.6;color:#4b5563;font-family:${FONT_STACK};">${opts.body}</div>
+  ${cta}
+  ${footer}
+</div>
+</body>
+</html>`;
+}
+
+/**
+ * Minimal HTML escape for the four characters that break attribute / text
+ * contexts. Sufficient for everything we paste into the templates above —
+ * we never paste into a <script> or unquoted attribute context, where the
+ * escape set would need to be larger.
+ */
+export function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Derive a plain-text fallback from an HTML body. Used by callers that don't
+ * want to hand-write the text version — pass the rendered HTML and this
+ * returns something inbox-readable. Not a general-purpose HTML→text
+ * converter: it strips tags, decodes the common entities, and collapses
+ * whitespace. Adequate for our own templates; don't trust on arbitrary HTML.
+ */
+export function htmlToText(html: string): string {
+  return html
+    // Drop scripts and styles entirely (head section, preheader hack).
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<head[\s\S]*?<\/head>/gi, '')
+    // Anchors → "label (url)" so links survive into text clients.
+    .replace(/<a\b[^>]*\bhref="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, '$2 ($1)')
+    // Block-ish tags become paragraph breaks.
+    .replace(/<\/(p|div|h[1-6]|li|tr|br)\b[^>]*>/gi, '\n')
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    // Strip everything else.
+    .replace(/<[^>]+>/g, '')
+    // Decode the entities we emit in escapeHtml.
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    // Collapse runs of whitespace / newlines.
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/^\s+|\s+$/g, '');
+}

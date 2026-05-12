@@ -1,0 +1,157 @@
+// EmailService interface + transport selection.
+//
+// One transport, hardcoded: Ahasend. No "users who pick a different provider"
+// abstraction layer. If AHASEND_SECRET_KEY (plus AHASEND_ACCOUNT_ID +
+// EMAIL_FROM_DOMAIN) is configured on the worker env, we hit Ahasend's
+// transactional API. Otherwise we fall back to a no-op that logs to stdout —
+// useful for local dev where you don't want to send real mail. There is no
+// fall-through on send failure: the Ahasend transport throws and the caller
+// decides retry policy (typically: don't, surface the error and let the user
+// retry the action).
+//
+// Resolution order for the from-address:
+//   email:   EMAIL_FROM_ADDRESS  (full override)
+//          | noreply@${EMAIL_FROM_DOMAIN}
+//   name:    EMAIL_FROM_NAME     (defaults to PROJECT_NAME baked in at install)
+//
+// Set EMAIL_FROM_DOMAIN to a domain registered + verified with Ahasend (see
+// supertools-design's 80-email concern, which writes AHASEND_FROM_DOMAIN —
+// surface it here as EMAIL_FROM_DOMAIN). Without it the transport selection
+// drops to NoopTransport.
+//
+// HANDOFF "Stack scope (locked in)": the stack template never creates the
+// Ahasend domain — that's the deploy concern's job. This file is the runtime
+// surface that consumes those creds when they exist.
+import { env } from 'cloudflare:workers';
+import { log } from './log';
+import { AhasendTransport } from './email-transport-ahasend';
+
+export interface EmailMessage {
+  /** Single recipient. Multi-recipient sends are not in scope for v0.1. */
+  to: string;
+  subject: string;
+  /** Pre-rendered HTML body. Use `renderEmail()` for a stock layout. */
+  html: string;
+  /**
+   * Plain-text fallback. Required by the EmailService contract; callers that
+   * only have HTML can derive a fallback via `htmlToText(html)` from
+   * ./email-templates.
+   */
+  text: string;
+}
+
+export interface EmailTransport {
+  /**
+   * Send a single message. Returns the provider's message ID on success.
+   * Throws on failure — no retries, no fallback. Caller is responsible for
+   * surfacing errors to the user.
+   */
+  send(message: EmailMessage): Promise<{ id: string }>;
+}
+
+/** Worker env surface this module cares about. Bind at the call site. */
+export interface EmailEnv {
+  AHASEND_SECRET_KEY?: string;
+  AHASEND_ACCOUNT_ID?: string;
+  EMAIL_FROM_DOMAIN?: string;
+  EMAIL_FROM_ADDRESS?: string;
+  EMAIL_FROM_NAME?: string;
+}
+
+/**
+ * No-op transport — logs the would-be send and returns a synthetic ID. Used
+ * in local dev when Ahasend creds aren't configured, and as the gate for
+ * harness layer L3.10 (we don't want every test run to hit Ahasend's real
+ * API).
+ */
+export class NoopTransport implements EmailTransport {
+  async send(message: EmailMessage): Promise<{ id: string }> {
+    const id = `noop-${crypto.randomUUID()}`;
+    log.info('email.noop', {
+      to: message.to,
+      subject: message.subject,
+      id,
+      bodyChars: message.html.length,
+    });
+    return { id };
+  }
+}
+
+/**
+ * Pick a transport based on what's configured on the worker env. The decision
+ * is made per-call so the same code path works for both local dev (no creds
+ * -> noop) and prod (full creds -> Ahasend) without conditional imports at
+ * the call site.
+ *
+ * If AHASEND_SECRET_KEY is set but AHASEND_ACCOUNT_ID or EMAIL_FROM_DOMAIN
+ * is missing, we throw — partial config is almost certainly a deployment
+ * mistake the operator wants to know about immediately, not a silent
+ * downgrade to noop.
+ */
+export function getEmailTransport(e: EmailEnv): EmailTransport {
+  if (!e.AHASEND_SECRET_KEY) {
+    return new NoopTransport();
+  }
+  if (!e.AHASEND_ACCOUNT_ID) {
+    throw new Error(
+      'email: AHASEND_SECRET_KEY is set but AHASEND_ACCOUNT_ID is not. ' +
+        'Set both, or unset both to use the no-op transport.',
+    );
+  }
+  const defaultFrom = resolveDefaultFrom(e);
+  if (!defaultFrom) {
+    throw new Error(
+      'email: AHASEND_SECRET_KEY is set but neither EMAIL_FROM_ADDRESS nor ' +
+        'EMAIL_FROM_DOMAIN is configured. Set one so we know what address ' +
+        'to send from.',
+    );
+  }
+  return new AhasendTransport(
+    e.AHASEND_SECRET_KEY,
+    e.AHASEND_ACCOUNT_ID,
+    defaultFrom,
+  );
+}
+
+function resolveDefaultFrom(
+  e: EmailEnv,
+): { email: string; name: string } | null {
+  const name = e.EMAIL_FROM_NAME?.trim() || '{{PROJECT_NAME}}';
+  if (e.EMAIL_FROM_ADDRESS?.trim()) {
+    return { email: e.EMAIL_FROM_ADDRESS.trim(), name };
+  }
+  if (e.EMAIL_FROM_DOMAIN?.trim()) {
+    return { email: `noreply@${e.EMAIL_FROM_DOMAIN.trim()}`, name };
+  }
+  return null;
+}
+
+/**
+ * Convenience: pick the transport from the worker env proxy and send. Logs a
+ * single info line on success, error line on failure. Re-throws so the caller
+ * can decide what to surface to the user.
+ *
+ * Callers that already have an env binding in hand (server functions with an
+ * explicit `env` parameter) can call `getEmailTransport(env).send(...)`
+ * directly — `sendEmail` exists to keep the call site short for the common
+ * case of "send a one-off email from the worker."
+ */
+export async function sendEmail(message: EmailMessage): Promise<{ id: string }> {
+  const transport = getEmailTransport(env as unknown as EmailEnv);
+  try {
+    const result = await transport.send(message);
+    log.info('email.sent', {
+      to: message.to,
+      subject: message.subject,
+      id: result.id,
+    });
+    return result;
+  } catch (err) {
+    log.error('email.failed', {
+      to: message.to,
+      subject: message.subject,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+}

@@ -1,0 +1,113 @@
+// Ahasend transport — the one provider this stack supports for transactional
+// email. Native fetch, no SDK. Confirmed against
+// `POST https://api.ahasend.com/v2/accounts/{account_id}/messages` returning
+// HTTP 202 with body shape:
+//   {
+//     "object": "list",
+//     "data": [
+//       { "object": "message", "id": "<...>", "recipient": {...},
+//         "status": "queued", "error": null }
+//     ]
+//   }
+// (The id is the message-id header value, including angle brackets.)
+//
+// HANDOFF "Stack decisions": Ahasend is the chosen email provider; there's no
+// strategy pattern here on purpose. If Nick ever switches providers, this file
+// gets rewritten and email.ts's transport selection swaps the class.
+import type { EmailMessage, EmailTransport } from './email';
+
+const AHASEND_BASE_URL = 'https://api.ahasend.com';
+
+export class AhasendTransport implements EmailTransport {
+  constructor(
+    private readonly secretKey: string,
+    private readonly accountId: string,
+    private readonly defaultFrom: { email: string; name: string },
+  ) {}
+
+  async send(message: EmailMessage): Promise<{ id: string }> {
+    const url = `${AHASEND_BASE_URL}/v2/accounts/${this.accountId}/messages`;
+    // Ahasend's API expects `text_content` + `html_content` (not `text` /
+    // `html` — those names belong to a different documented shape). The
+    // EmailMessage interface uses `text` / `html` because that's the
+    // language email-sending callers think in; we map at the boundary here.
+    const payload = {
+      from: this.defaultFrom,
+      recipients: [{ email: message.to }],
+      subject: message.subject,
+      text_content: message.text,
+      html_content: message.html,
+    };
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      // Network-level failure (DNS, TLS, connect timeout). The fetch error
+      // message is opaque on workerd; wrap with our prefix so logs are
+      // greppable.
+      throw new Error(
+        `Ahasend send failed (network): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    if (!res.ok) {
+      // Read the body for the operator log — Ahasend's error payloads are
+      // JSON `{ "message": "..." }` (e.g. unverified domain, missing scope).
+      // Keep the body in the thrown error so log.error('email.failed', ...)
+      // captures it.
+      const body = await res.text().catch(() => '');
+      throw new Error(`Ahasend send failed (${res.status}): ${body}`);
+    }
+
+    // Successful sends return 202. The response is wrapped as a list because
+    // multi-recipient sends batch under the same endpoint; for our single-
+    // recipient sends `data` always has exactly one element.
+    let parsed: unknown;
+    try {
+      parsed = await res.json();
+    } catch (err) {
+      throw new Error(
+        `Ahasend send: invalid JSON in successful response (${res.status}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    const id = extractMessageId(parsed);
+    if (!id) {
+      throw new Error(
+        `Ahasend send: response had no message id (status ${res.status}): ${JSON.stringify(parsed)}`,
+      );
+    }
+    return { id };
+  }
+}
+
+/**
+ * Ahasend's success response is `{ object: 'list', data: [{ id, status, ... }] }`.
+ * Older docs / endpoint variants used `message_id` at the top level — accept
+ * either shape so we don't break if Ahasend revs the response. If neither key
+ * is present, return null and let the caller throw.
+ */
+function extractMessageId(parsed: unknown): string | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const obj = parsed as Record<string, unknown>;
+  if (Array.isArray(obj.data) && obj.data.length > 0) {
+    const first = obj.data[0] as Record<string, unknown>;
+    if (typeof first.id === 'string' && first.id) return first.id;
+    if (typeof first.message_id === 'string' && first.message_id) return first.message_id;
+  }
+  if (typeof obj.id === 'string' && obj.id) return obj.id;
+  if (typeof obj.message_id === 'string' && obj.message_id) return obj.message_id;
+  return null;
+}
