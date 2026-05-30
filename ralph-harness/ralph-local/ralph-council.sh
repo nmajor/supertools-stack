@@ -73,6 +73,9 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
   iout="$(cat "$io")"
   if needs_help "$iout"; then
     reason="$(extract_blocked_reason "$iout")$(extract_decide_question "$iout")"
+    # Don't mark blocked — a BLOCKED/DECIDE is a human-intervention point and the
+    # task should be retried after the human resolves it. Just restore the tree.
+    stash_attempt "$id" "needs-help"
     log "⛔ $id raised BLOCKED/DECIDE: $reason"
     exit $EXIT_BLOCKED
   fi
@@ -80,6 +83,7 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
   # task; do not send an empty diff to review or finalize a no-op task.
   git -C "$PROJECT_ROOT" add -A
   if git -C "$PROJECT_ROOT" diff --cached --quiet; then
+    stash_attempt "$id" "no-diff"
     mark_task_blocked "$id"
     log "⛔ $id: implementer produced no changes — marked blocked. <promise>BLOCKED:$id no diff</promise>"
     exit $EXIT_BLOCKED
@@ -112,18 +116,21 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
   done
 
   if [ "$approved" != true ]; then
+    # Rejected work must never persist to be swept into a later baseline commit.
+    stash_attempt "$id" "rejected"
     mark_task_blocked "$id"
-    log "⛔ $id failed review after $MAX_REVIEW_ROUNDS rounds — marked blocked. <promise>BLOCKED:$id review</promise>"
+    log "⛔ $id failed review after $MAX_REVIEW_ROUNDS rounds — rejected diff stashed, marked blocked. <promise>BLOCKED:$id review</promise>"
     exit $EXIT_BLOCKED
   fi
 
   # 3) accept: mark + log, then COMMIT (must succeed). A task is only finalized
-  #    once its per-task commit lands; a commit failure rolls back the pass.
+  #    once its per-task commit lands; a commit failure restores the tree + blocks.
   mark_task_pass "$id"
   log_entry "$id — $title" "Council-approved (codex+gemini). Review: $REVIEWS_DIR/$id-CODE-REVIEW-*."
   if ! commit_task "$id" "$title"; then
-    mark_task_pending "$id"; mark_task_blocked "$id"
-    log "⛔ $id: commit failed — rolled back passes, marked blocked. <promise>BLOCKED:$id commit</promise>"
+    stash_attempt "$id" "commit-fail"
+    mark_task_blocked "$id"
+    log "⛔ $id: commit failed — restored tree, marked blocked. <promise>BLOCKED:$id commit</promise>"
     exit $EXIT_BLOCKED
   fi
   log "   ✓ $id done & committed ($(task_remaining) remaining)"

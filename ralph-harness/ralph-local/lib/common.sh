@@ -97,6 +97,21 @@ ensure_clean_baseline() {
   fi
 }
 
+# When a task aborts mid-flight (review rejection, no diff, commit failure, or a
+# BLOCKED/DECIDE from the implementer), its uncommitted changes MUST NOT be left
+# dirty — otherwise the next run's ensure_clean_baseline() would sweep that
+# never-reviewed code into a baseline commit, bypassing the review gate. Preserve
+# the attempt in a stash (forensics, out of the commit path) and restore the
+# worktree to the last good commit.
+stash_attempt() {
+  local id="$1" label="$2"
+  if [ -n "$(git -C "$PROJECT_ROOT" status --porcelain)" ]; then
+    git -C "$PROJECT_ROOT" stash push -u -q -m "ralph-${label}-${id}" 2>/dev/null \
+      || { git -C "$PROJECT_ROOT" reset --hard -q HEAD; git -C "$PROJECT_ROOT" clean -fdq 2>/dev/null || true; }
+    log "   attempt for $id preserved in stash 'ralph-${label}-${id}', worktree restored to HEAD"
+  fi
+}
+
 # Stage everything and commit it as the task's commit. Returns:
 #   0 committed · 2 nothing staged (implementer produced no diff) · other = commit error.
 # Never swallows a failure as success — the caller must treat non-zero as fatal.
