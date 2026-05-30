@@ -10,8 +10,19 @@
 
 task_total() { jq 'length' "$TASKS_FILE" 2>/dev/null || echo 0; }
 
+tasks_passed() {
+  jq '[.[] | select((.passes // false)==true)] | length' "$TASKS_FILE" 2>/dev/null || echo 0
+}
+
+# Runnable = not passed and not blocked. (task_remaining kept as an alias for logs.)
 task_remaining() {
   jq '[.[] | select((.passes // false)==false and (.blocked // false)==false)] | length' \
+    "$TASKS_FILE" 2>/dev/null || echo 0
+}
+
+# Incomplete tasks stuck in blocked state — these must NOT be mistaken for done.
+blocked_incomplete() {
+  jq '[.[] | select((.passes // false)==false and (.blocked // false)==true)] | length' \
     "$TASKS_FILE" 2>/dev/null || echo 0
 }
 
@@ -46,9 +57,11 @@ mark_task_blocked() {
   jq --arg id "$id" 'map(if .id==$id then .blocked=true else . end)' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
 }
 
-# 0 (true) when there is at least one task and all are passes:true.
+# 0 (true) ONLY when there is at least one task and EVERY task is passes:true.
+# Must not be satisfied by blocked-but-unpassed tasks (those make remaining 0
+# without making the work done).
 all_tasks_pass() {
-  local total remaining
-  total="$(task_total)"; remaining="$(task_remaining)"
-  [ "$total" -gt 0 ] && [ "$remaining" -eq 0 ]
+  local total passed
+  total="$(task_total)"; passed="$(tasks_passed)"
+  [ "$total" -gt 0 ] && [ "$passed" -eq "$total" ]
 }

@@ -57,7 +57,12 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
     exit $EXIT_COMPLETE
   fi
   id="$(next_task_id)"
-  [ -n "$id" ] || { log "no remaining unblocked tasks. <promise>COMPLETE</promise>"; exit $EXIT_COMPLETE; }
+  if [ -z "$id" ]; then
+    # No runnable task, yet not all passed → only blocked-incomplete tasks remain.
+    # This is NOT done — surface for a human rather than falsely reporting COMPLETE.
+    log "⛔ no runnable tasks but $(blocked_incomplete) blocked task(s) still unpassed ($(tasks_passed)/$(task_total) passed). <promise>BLOCKED:blocked tasks remain</promise>"
+    exit $EXIT_BLOCKED
+  fi
   title="$(task_field "$id" title)"
   echo; log "════ iteration $i/$MAX_ITERATIONS · $id — $title ════"
 

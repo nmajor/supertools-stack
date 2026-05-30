@@ -68,10 +68,17 @@ require_git_commit_capable() {
 ensure_build_branch() {
   git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repo" $EXIT_PRECONDITION
   local cur; cur="$(git -C "$PROJECT_ROOT" branch --show-current)"
-  if [ "$cur" != "$RALPH_BUILD_BRANCH" ]; then
-    log "switching to build branch $RALPH_BUILD_BRANCH (from $cur)"
-    git -C "$PROJECT_ROOT" checkout -B "$RALPH_BUILD_BRANCH" >/dev/null 2>&1 \
-      || die "could not switch to $RALPH_BUILD_BRANCH" $EXIT_PRECONDITION
+  [ "$cur" = "$RALPH_BUILD_BRANCH" ] && return 0
+  if git -C "$PROJECT_ROOT" rev-parse --verify "$RALPH_BUILD_BRANCH" >/dev/null 2>&1; then
+    # Branch already exists (a resumed run) — switch to it WITHOUT resetting its
+    # per-task commits. -B would reset to the current HEAD and lose progress.
+    log "resuming on existing build branch $RALPH_BUILD_BRANCH (from $cur)"
+    git -C "$PROJECT_ROOT" checkout "$RALPH_BUILD_BRANCH" >/dev/null 2>&1 \
+      || die "could not switch to existing $RALPH_BUILD_BRANCH (worktree conflict?)" $EXIT_PRECONDITION
+  else
+    log "creating build branch $RALPH_BUILD_BRANCH (from $cur)"
+    git -C "$PROJECT_ROOT" checkout -b "$RALPH_BUILD_BRANCH" >/dev/null 2>&1 \
+      || die "could not create $RALPH_BUILD_BRANCH" $EXIT_PRECONDITION
   fi
 }
 
