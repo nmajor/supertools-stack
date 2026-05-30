@@ -16,8 +16,17 @@ source "$HERE/lib/promise.sh"
 require_cmds git jq claude codex gemini
 mkdir -p "$REVIEWS_DIR" "$TASKS_DETAIL_DIR" "$AGENT_DIR/prd"
 
-DEFAULT_SOURCES="design/product-plan docs/00-product-spec.md .supertools-state/ralph-requirements.json /home/coder/random/veilboard-poc/poc .agent/DECISIONS.md src wrangler.jsonc"
+# Project-relative defaults only — no personal absolute paths in the reusable
+# engine. Extra sources (e.g. an out-of-repo reference codebase) come from
+# $RALPH_PLAN_SOURCES or a project-local .agent/plan-sources.txt (one per line),
+# which skill 15 writes for VeilBoard (the PoC path lives there, not here).
+DEFAULT_SOURCES="design/product-plan docs/00-product-spec.md .supertools-state/ralph-requirements.json .agent/DECISIONS.md src wrangler.jsonc"
 SOURCES="${RALPH_PLAN_SOURCES:-$DEFAULT_SOURCES}"
+if [ -f "$AGENT_DIR/plan-sources.txt" ]; then
+  while IFS= read -r line; do
+    [ -n "$line" ] && [ "${line#\#}" = "$line" ] && SOURCES="$SOURCES $line"
+  done < "$AGENT_DIR/plan-sources.txt"
+fi
 
 gen_prompt() {  # $1 = round, $2 = findings-file (empty on round 0)
   local round="$1" findings="$2"

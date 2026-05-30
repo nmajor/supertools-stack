@@ -10,12 +10,13 @@
 # the council review gate before each commit (see ralph-council.sh).
 
 # run_claude <prompt-file> <out-file>  — implementer / generator / claude-reviewer
+# Runs in $PROJECT_ROOT (like the codex/gemini reviewers) so file paths resolve.
 run_claude() {
   local pf="$1" out="$2"
-  claude -p \
-    --model "$RALPH_CLAUDE_MODEL" \
-    --permission-mode bypassPermissions \
-    < "$pf" > "$out" 2>&1
+  ( cd "$PROJECT_ROOT" && claude -p \
+      --model "$RALPH_CLAUDE_MODEL" \
+      --permission-mode bypassPermissions \
+      < "$pf" ) > "$out" 2>&1
   return $?
 }
 

@@ -59,6 +59,12 @@ set_planning_status() {
 }
 
 # --- git helpers ---
+require_git_commit_capable() {
+  git -C "$PROJECT_ROOT" config user.name  >/dev/null 2>&1 \
+    && git -C "$PROJECT_ROOT" config user.email >/dev/null 2>&1 \
+    || die "git identity not configured (user.name/user.email) — per-task commits would fail" $EXIT_PRECONDITION
+}
+
 ensure_build_branch() {
   git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repo" $EXIT_PRECONDITION
   local cur; cur="$(git -C "$PROJECT_ROOT" branch --show-current)"
@@ -69,14 +75,34 @@ ensure_build_branch() {
   fi
 }
 
+# Per-task commits are the rollback boundary, and each per-task diff must contain
+# ONLY that task's work. Any pre-existing dirty state (e.g. the harness + approved
+# plan laid by skills 14/15, or unrelated edits) is captured in ONE labeled
+# baseline commit up front so it can never leak into a task's diff/commit.
+ensure_clean_baseline() {
+  if [ -n "$(git -C "$PROJECT_ROOT" status --porcelain)" ]; then
+    log "dirty worktree at build start — capturing a baseline commit so task diffs stay isolated"
+    git -C "$PROJECT_ROOT" add -A
+    git -C "$PROJECT_ROOT" -c core.hooksPath=/dev/null commit -q \
+      -m "chore(ralph): baseline before build loop" \
+      -m "Captures the harness + approved plan + any pre-existing changes." \
+      || die "baseline commit failed (git identity?)" $EXIT_PRECONDITION
+  fi
+}
+
+# Stage everything and commit it as the task's commit. Returns:
+#   0 committed · 2 nothing staged (implementer produced no diff) · other = commit error.
+# Never swallows a failure as success — the caller must treat non-zero as fatal.
 commit_task() {
   local id="$1"; local title="$2"
   git -C "$PROJECT_ROOT" add -A
+  if git -C "$PROJECT_ROOT" diff --cached --quiet; then
+    log "no staged changes for $id — nothing to commit"; return 2
+  fi
   git -C "$PROJECT_ROOT" -c core.hooksPath=/dev/null commit -q \
     -m "feat($id): $title" \
     -m "Implemented and council-approved (Codex + Gemini) via ralph build loop." \
-    -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>" \
-    || log "nothing to commit for $id"
+    -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 }
 
 log_entry() {

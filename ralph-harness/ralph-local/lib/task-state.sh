@@ -36,6 +36,11 @@ mark_task_pass() {
   jq --arg id "$id" 'map(if .id==$id then .passes=true else . end)' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
 }
 
+mark_task_pending() {
+  local id="$1"; local tmp; tmp="$(mktemp)"
+  jq --arg id "$id" 'map(if .id==$id then .passes=false else . end)' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"
+}
+
 mark_task_blocked() {
   local id="$1"; local tmp; tmp="$(mktemp)"
   jq --arg id "$id" 'map(if .id==$id then .blocked=true else . end)' "$TASKS_FILE" > "$tmp" && mv "$tmp" "$TASKS_FILE"

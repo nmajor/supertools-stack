@@ -25,7 +25,9 @@ esac
 
 [ "$(planning_status)" = approved ] || die "planning-status is '$(planning_status)', not 'approved'. Run ralph-plan-council.sh first." $EXIT_PRECONDITION
 [ -s "$TASKS_FILE" ] || die "no .agent/tasks.json" $EXIT_PRECONDITION
+require_git_commit_capable
 ensure_build_branch
+ensure_clean_baseline   # isolate per-task diffs from any pre-existing dirty state
 
 implement_prompt() {  # $1 = task id
   cat "$AGENT_DIR/PROMPT.md"
@@ -62,12 +64,23 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
   # 1) implement
   ip="$(mktemp)"; implement_prompt "$id" > "$ip"
   io="$HISTORY_DIR/$id-implement.log"
-  run_claude "$ip" "$io" || log "implementer exited nonzero — proceeding to review the diff"
-  if needs_help "$(cat "$io")"; then
-    reason="$(extract_blocked_reason "$(cat "$io")")$(extract_decide_question "$(cat "$io")")"
+  run_claude "$ip" "$io" || log "implementer exited nonzero — checking what it produced"
+  iout="$(cat "$io")"
+  if needs_help "$iout"; then
+    reason="$(extract_blocked_reason "$iout")$(extract_decide_question "$iout")"
     log "⛔ $id raised BLOCKED/DECIDE: $reason"
     exit $EXIT_BLOCKED
   fi
+  # The implementer must actually change something. No diff → it didn't do the
+  # task; do not send an empty diff to review or finalize a no-op task.
+  git -C "$PROJECT_ROOT" add -A
+  if git -C "$PROJECT_ROOT" diff --cached --quiet; then
+    mark_task_blocked "$id"
+    log "⛔ $id: implementer produced no changes — marked blocked. <promise>BLOCKED:$id no diff</promise>"
+    exit $EXIT_BLOCKED
+  fi
+  echo "$iout" | grep -q "<promise>$id:DONE</promise>" \
+    || log "   note: $id DONE tag not found in implementer output — proceeding on the produced diff"
 
   # 2) review (Codex + Gemini, parallel) → fix loop
   approved=false
@@ -99,10 +112,15 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
     exit $EXIT_BLOCKED
   fi
 
-  # 3) accept: mark, log, commit
+  # 3) accept: mark + log, then COMMIT (must succeed). A task is only finalized
+  #    once its per-task commit lands; a commit failure rolls back the pass.
   mark_task_pass "$id"
   log_entry "$id — $title" "Council-approved (codex+gemini). Review: $REVIEWS_DIR/$id-CODE-REVIEW-*."
-  commit_task "$id" "$title"
+  if ! commit_task "$id" "$title"; then
+    mark_task_pending "$id"; mark_task_blocked "$id"
+    log "⛔ $id: commit failed — rolled back passes, marked blocked. <promise>BLOCKED:$id commit</promise>"
+    exit $EXIT_BLOCKED
+  fi
   log "   ✓ $id done & committed ($(task_remaining) remaining)"
 done
 
