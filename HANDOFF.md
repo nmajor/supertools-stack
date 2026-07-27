@@ -7,12 +7,16 @@ This document is the complete briefing for an agent picking up this work cold. R
 - [customizations/README.md](customizations/README.md) — per-step customizations layout
 - [scripts/install-steps/_step-lib.mjs](scripts/install-steps/_step-lib.mjs) and [00-scaffold.mjs](scripts/install-steps/00-scaffold.mjs) — the install-step contract by example
 
+> **How to read this file.** It holds *decisions and history* — why things are the way they are, what the user has ruled in or out, what bit us before. That's the part worth trusting.
+>
+> It is **not** a status board. An earlier revision claimed only `00-scaffold` existed long after nine more steps had shipped, and an agent reading it cold repeated that to the user as fact. So: for anything about current scope — which steps exist, what the harness checks, what's done — go to the tree (`scripts/install-steps/`, `scripts/test.mjs`, `git log`). Where this file has to describe current state, it points at the authoritative location instead of listing. Keep it that way when you edit it.
+
 ## TL;DR
 
 1. Two repos: `supertools-design` (orchestration plugin for Claude Code) and `supertools-stack` (this repo — canonical TanStack Start + CF Workers + D1 + Drizzle + Better Auth template).
-2. v0.1 + v0.2-prep are live and verified. The install pipeline is **modular** — install-steps live in `scripts/install-steps/<NN>-<name>.mjs` and write per-step receipts to `<project>/.supertools-state/`. Re-running the install picks up where it left off.
-3. Only one step exists today: `00-scaffold` (calls C3 → `@tanstack/create-start`).
-4. The **next work is `10-db`** — D1 binding into `wrangler.jsonc`, `drizzle.config.ts`, `src/db/schema.ts` with Better Auth tables + cascade FKs, plus a Vitest cascade-contract test.
+2. The install pipeline is **modular** — install-steps live in `scripts/install-steps/<NN>-<name>.mjs` and write per-step receipts to `<project>/.supertools-state/`. Re-running the install picks up where it left off.
+3. **`install.sh` produces a working app, not a scaffold.** Scaffold, D1 + Drizzle, foundation (logging / request IDs / security headers / error pages), Better Auth, email transport, password reset, auth hardening, marketing pages, dashboard + delete-account, and legal content have all shipped.
+4. **Never enumerate the steps from memory or from this file.** `scripts/install-steps/` is the source of truth; the orchestrator discovers whatever is there and runs it in numeric-prefix order. Run `ls scripts/install-steps/*.mjs` before saying anything about pipeline scope.
 5. Pattern: each new install-step lands as one commit that leaves `node scripts/test.mjs` green.
 
 ## The two repos
@@ -20,17 +24,20 @@ This document is the complete briefing for an agent picking up this work cold. R
 ### supertools-design (sister repo)
 
 - Live at `https://github.com/nmajor/supertools-design`.
-- Claude Code plugin: ships slash commands like `/supertools-design:start`, `/supertools-design:bootstrap`, etc.
-- Delivers two patterns: **workflows** (decision documents in `product/supertools/<workflow>/`) and **concerns** (numbered modules under `concerns/<NN>-<name>/` for actually wiring things up).
-- Hard prerequisite enforced in every command: Design OS must have produced `product-plan/` with `README.md` and `product-overview.md`, otherwise the command refuses.
-- Already implemented: `start`, `status`, `bootstrap`, `80-email` (full Ahasend domain registration + CF DNS write + test email + write to `.env`), `70-analytics` (smoke-test only). Other concerns are stubs.
+- **Hard prerequisite enforced in every command: Design OS must have produced `product-plan/` with `README.md` and `product-overview.md`, otherwise the command refuses.** This is the load-bearing assumption of the whole two-repo system and has not changed.
+- Claude Code plugin (`.claude-plugin/plugin.json`): ships slash commands in `commands/` — `/supertools-design:start`, `:status`, `:bootstrap`, `:logo`, `:tech-stack`, and others. `start` writes a status tracker to `product/supertools/status.md`.
+- The wiring layer is **numbered skills under `.skills/<NN>-<name>/`**, each with `SKILL.md`, `requires.json`, `setup.mjs`, and `verify.mjs`. Shared helpers live in `.skills/_shared/`.
+- Three tracks: a bootstrap track (`00-prereqs` … `17-launch-verify`, run in dependency order), a post-launch `seo-*` track, and meta-skills (`_collab-review`, `icp-focus-group`).
+- `01-project-init` is the skill that consumes this repo: it wraps `supertools-stack/install.sh`, resolving the stack from `$SUPERTOOLS_STACK_DIR`, then `../supertools-stack`, then a fresh GitHub clone.
+
+> There is no `concerns/` directory, and no `80-email` / `70-analytics`. An earlier revision of this file described that architecture; it was superseded by the `.skills/` layout. Read `.skills/` in that repo — or its `README.md`, which keeps the current pipeline table — rather than trusting any list written here.
 
 ### supertools-stack (this repo)
 
 - Live at `https://github.com/nmajor/supertools-stack`.
 - Bootstraps a project at `<target>` from the canonical stack. Doesn't deploy — deployment is a later supertools-design step.
 - Maintained as a **tested artifact**: weekly cron + on-install refresh propose package updates, gated by `scripts/test.mjs`. The point is: when libraries drift, the LLM-driven refresh has a real test as the gate, so updates are safe.
-- Used by `supertools-design`'s `10-project-init` concern (eventually — that concern is still a stub).
+- Consumed by `supertools-design`'s `01-project-init` skill, which is implemented and calls `install.sh` in-place over an existing project root (preserving `research/`, `design/`, `docs/`, `CLAUDE.md`, `.env`, `.skills/`).
 
 ## Stack decisions (locked in by the user)
 
@@ -58,9 +65,11 @@ This document is the complete briefing for an agent picking up this work cold. R
 
 The deploy step lives in supertools-design as a future concern. Stack template just lays down code; it always works locally with `npm run dev`.
 
-For the test harness, **mock CF and other external services**. The user is OK with mocking because LLM supervision in `codex-install.sh` (v0.3+) catches real-install failures.
+For the test harness, **mock CF and other external services**. The user is OK with mocking because LLM supervision in `codex-install.sh` is meant to catch real-install failures — note that wrapper is still a stub, so nothing catches them today.
 
 ## Current state — supertools-stack
+
+This tree is deliberately shallow. **Directories, not file lists — the contents change and any enumeration here rots.** Run `ls` on the two starred directories before reasoning about scope.
 
 ```
 .
@@ -68,55 +77,61 @@ For the test harness, **mock CF and other external services**. The user is OK wi
 ├── README.md
 ├── LICENSE                              # MIT
 ├── .gitignore
-├── package.json                         # type: module, scripts: test, refresh
-├── install.sh                           # main entry; weekly-gated refresh
-├── codex-install.sh                     # stub — falls back to install.sh
+├── package.json                         # type: module, scripts: test, test:unit, refresh
+├── install.sh                           # main entry; weekly-gated refresh, then orchestrator
+├── codex-install.sh                     # stub — delegates to install.sh
 ├── customizations/
 │   ├── README.md                        # per-step layout convention
-│   └── SCAFFOLD-NOTES.md                # ★ critical — what C3 actually produces
+│   ├── SCAFFOLD-NOTES.md                # ★ critical — what C3 actually produces
+│   └── <step-id>/                       # ★ one subtree per install-step, mirrors the step list
 ├── scripts/
 │   ├── _lib.mjs                         # runCmd, spawnBg(detached), waitForUrl(strict 200), killProcessGroup, pickFreePort
 │   ├── orchestrate-install.mjs          # walker that runs install-steps in order
 │   ├── render.mjs                       # {{PLACEHOLDER}} substitution + renderTree
-│   ├── refresh.mjs                      # stub — v0.3+ LLM-driven dep updater
-│   ├── test.mjs                         # the gate: install → build → typecheck → vite-dev probe
-│   └── install-steps/
+│   ├── refresh.mjs                      # stub — LLM-driven dep updater
+│   ├── setup-turnstile.mjs              # provisions CF Turnstile keys (used by 27-auth-hardening + the harness)
+│   ├── test.mjs                         # the gate; its header comment documents every layer
+│   ├── *.test.mjs                       # node --test unit tests (npm run test:unit)
+│   └── install-steps/                   # ★ THE PIPELINE — source of truth
 │       ├── _step-lib.mjs                # readReceipt, writeReceipt, fileExists, listDir, assertValidStep
-│       └── 00-scaffold.mjs              # only step today
-├── tests/                               # placeholders; vitest/playwright tests land per-step in v0.3+
-│   ├── unit/
-│   ├── integration/
-│   └── e2e/
+│       └── <NN>-<name>.mjs              # discovered and run in numeric-prefix order
+├── ralph-harness/                       # de-dockerized 3-agent council build engine
+│   ├── council/                         # plan/build/review prompt docs
+│   └── ralph-local/                     # runner scripts + lib
 └── .github/workflows/refresh.yml        # weekly Mon 12:00 UTC + workflow_dispatch
 ```
 
-### Commit history (most recent first)
+There is **no top-level `tests/` directory.** Test templates live inside the step that owns them (e.g. `customizations/10-db/tests/10-db/cascade-contract.test.ts.tmpl`) and are rendered into the generated project. The repo's own end-to-end gate is `scripts/test.mjs`; its unit tests are `scripts/*.test.mjs`.
 
-```
-b8956ac  v0.2 prep: modular install-steps model + harness hardening
-e3acdd3  v0.1.1: scaffolder produces real TanStack Start app (was Hello World)
-5779887  v0.1 follow-up: switch to npm/npx (no global pnpm/wrangler dependency)
-0ab4958  v0.1 skeleton: install.sh wraps `npm create cloudflare@latest`
+### Commit history
+
+Read it from git, not from here:
+
+```sh
+git log --oneline
 ```
 
 ### What's verified
 
-```
-[L1 → 00-scaffold] real TanStack Start app                    ✓ ~3 min, deprecation warning expected
-[L2] npm run build                                             ✓ ~450ms
-[L2.5] npx tsc --noEmit                                        ✓
-[L3] vite dev :<random-free-port> → GET / → 200 OK             ✓
-PASS, no orphans, no port leaks
+`scripts/test.mjs` is the verification. Its header comment enumerates every layer it exercises and which install-step added each one — that comment lives next to the code and is maintained with it, so **treat it as the spec** rather than duplicating the list here.
+
+Confirm current state by running it from the repo root:
+
+```sh
+node scripts/test.mjs                    # full cold run (~3 min dominated by the C3 scaffold)
+node scripts/test.mjs --reuse-scaffold   # dev inner loop; caches the post-scaffold tree
 ```
 
-Confirm by running `node scripts/test.mjs` from repo root. (Requires Node ≥22 and outbound network for npm.)
+Requires Node ≥22 and outbound network for npm.
 
 ### What's NOT verified
 
-- The `install.sh` weekly-refresh path (`.last-refresh` gating, commit/push/rollback logic). Stub `refresh.mjs` is a no-op so the commit branch never had anything to commit. When refresh.mjs becomes real, that branch may have bugs.
-- `codex-install.sh` is a stub.
-- `render.mjs` placeholder substitution. No customizations exist yet to exercise it.
+- The `install.sh` weekly-refresh path (`.last-refresh` gating, commit/push/rollback logic). `refresh.mjs` is still a no-op stub, so the commit branch never had anything to commit. When refresh.mjs becomes real, that branch may have bugs.
+- `codex-install.sh` is still a stub.
 - The CI workflow (`.github/workflows/refresh.yml`) — never triggered in CI.
+- **L4 (real Playwright e2e).** Still not implemented; L3.6's HTTP probe covers route registration, `head()` wiring, and JSON-LD presence instead. Interactive UI in the dashboard has no browser-level coverage in this repo.
+- Real Ahasend sends. The harness deliberately drops to `NoopTransport` so it doesn't spam an inbox; real sends are a manual verify step.
+- Security headers and the auth rate limiter under live prod conditions. Both are gated structurally (source-content / binding declaration) because `vite dev` skips headers and miniflare doesn't enforce the ratelimit binding locally.
 
 ## Real bugs encountered (and how they were fixed)
 
@@ -136,35 +151,31 @@ These are battle scars — the next agent should know they exist so they're not 
 
 ## Test harness contract
 
-`scripts/test.mjs` is the gate everything else depends on. Currently exercises four layers:
+`scripts/test.mjs` is the gate everything else depends on. It renders a full install into a tmpdir, then builds, typechecks, sets up the local D1, boots `vite dev` on a random free port, and runs a series of HTTP/DB probes against it.
 
-| Layer | What | Runs |
-|---|---|---|
-| L1 | install.sh end-to-end | scaffolder runs, scaffold is correctly shaped |
-| L2 | `npm run build` (vite build) | production build succeeds; routeTree.gen.ts generated |
-| L2.5 | `npx tsc --noEmit` | TypeScript types are sound |
-| L3 | `vite dev --port=<random>` then `GET /` | dev server boots and serves the home route |
+**The layer list is not reproduced here.** It grew with every install-step and would go stale the moment the next one lands. The authoritative list — every layer, what it asserts, and which step introduced it — is the header comment of [`scripts/test.mjs`](scripts/test.mjs). Read that file.
 
-Each install-step added in v0.3+ MUST keep all four layers green. Test extensions per step go in `tests/<step-id>/`.
+The stable contract, which is what actually matters to a new step:
 
-Planned later: **L4 Playwright** (real browser e2e — sign up, navigate, check JSON-LD on resource pages) and **L5 real deploy** (deferred — out of scope for stack repo).
+- Every install-step you add MUST leave `node scripts/test.mjs` green — *all* layers, not just yours.
+- A step's own test templates go in `customizations/<step-id>/tests/<step-id>/`, rendered into the generated project. They do **not** go in a top-level `tests/` directory (there isn't one).
+- Runtime probes that need the live dev server are added to `scripts/test.mjs` as a new `L3.x` layer, numbered after the last one.
+- Prefer plain HTTP probes over adding a browser dep. Most of what the steps produce is SSR'd static HTML.
+- Where a contract can't be observed locally (security headers under `vite dev`, ratelimit bindings under miniflare, real email sends), gate it **structurally** — assert the source or binding declares it — and note that prod-side observation is manual. Several layers already do this; follow the precedent.
+
+Still open: **L4 Playwright** (real browser e2e for interactive dashboard UI) and **L5 real deploy** (deferred — out of scope for the stack repo).
 
 ## The plan ahead
 
-Sequence the user agreed to. **Each row is one commit.** Each commit must leave `node scripts/test.mjs` green.
+The originally agreed step sequence (`10-db` → `20-auth` → `30-marketing` → `40-dashboard` → `50-legal`) is **complete**, plus `15-foundation`, `25-email`, `26-password-reset`, and `27-auth-hardening` which were added along the way.
 
-| # | Commit | New install-step | New customizations subtree | Test additions |
-|---|---|---|---|---|
-| 1 | `10-db: D1 binding + Drizzle + schema` | `scripts/install-steps/10-db.mjs` | `customizations/10-db/` with `wrangler.jsonc.patcher.mjs` (or similar), `drizzle.config.ts`, `src/db/schema.ts.tmpl`, `src/db/index.ts.tmpl` | `tests/10-db/cascade-contract.test.ts` (runtime introspection via Drizzle's `getTableConfig`); harness extension to run `npm run db:generate` and apply migrations to local D1 |
-| 2 | `20-auth: Better Auth + auth pages` | `20-auth.mjs` | `customizations/20-auth/` with `src/lib/auth.ts.tmpl`, `src/lib/auth-client.ts.tmpl`, `src/routes/api/auth/$.tsx.tmpl`, `src/routes/(auth)/sign-{in,up}.tsx.tmpl` | `tests/20-auth/signup-flow.test.ts` — POST `/api/auth/sign-up` → 200 + session, GET session works |
-| 3 | `30-marketing: pages + nav + SEO` | `30-marketing.mjs` | `customizations/30-marketing/` with `src/components/{MarketingNav,Footer,SeoHead}.tsx.tmpl`, `src/routes/_marketing.tsx.tmpl`, `src/routes/{index,pricing,terms,privacy,resources/index,resources/example-resource}.tsx.tmpl` | `tests/30-marketing/seo-meta.spec.ts` (Playwright) — visit each, check title + JSON-LD |
-| 4 | `40-dashboard: dashboard + settings + delete-account` (later) | `40-dashboard.mjs` | dashboard layout, dashboard nav, settings page with `Danger zone → Delete account` typed-confirm modal | `tests/40-dashboard/delete-account.spec.ts` (Playwright) |
-| 5 | `50-legal: terms + privacy templates with placeholders` (later) | (could fold into 30-marketing if user prefers) | `customizations/50-legal/{terms.md.tmpl, privacy.md.tmpl}` with `{{COMPANY_LEGAL_NAME}}`, `{{PRODUCT_NAME}}`, `{{DOMAIN}}`, `{{PRIVACY_EMAIL}}`, `{{EU_REPRESENTATIVE}}`, `{{MOR_NAME}}` etc. | render-time placeholder validation |
+Known remaining work:
 
-Beyond steps:
 - Real `refresh.mjs` (codex/claude wrapper that bumps deps + runs `test.mjs` + bisects on failure)
 - `codex-install.sh` body (codex-supervised install wrapper)
-- L4 Playwright in test.mjs
+- L4 Playwright in `test.mjs`
+
+Anything beyond that is not decided — ask the user rather than inferring a roadmap from this file.
 
 ## Decisions already made about the next slices
 
@@ -217,58 +228,35 @@ Ask the user to re-paste them rather than searching for them. Treat them as ephe
 
 Its `.git` history is from the source clone, not relevant to supertools work. If you need a fresh test, copy `~/app-design/` again to a new sibling.
 
-## How to pick up the next slice
+## How to pick up the next slice / add an install step
 
-The next item is `10-db`. Concrete plan:
+**First, find out what state the repo is actually in.** Do not assume from this document — it has been wrong before:
 
-1. **Read** [customizations/SCAFFOLD-NOTES.md](customizations/SCAFFOLD-NOTES.md) thoroughly. It tells you exactly what `wrangler.jsonc` looks like fresh from the scaffolder, where to add the `d1_databases` block, etc.
+```sh
+ls scripts/install-steps/*.mjs        # what the pipeline does today
+ls customizations/                    # matching template subtrees
+git log --oneline -15                 # what landed recently
+```
 
-2. **Verify the harness still runs**. Before any changes:
+Then the generic recipe for adding a step. Copy the shape from a recent step — [`25-email.mjs`](scripts/install-steps/25-email.mjs) is a clean, small example.
+
+1. **Read** [customizations/SCAFFOLD-NOTES.md](customizations/SCAFFOLD-NOTES.md). It records what C3 actually produces — the real shape of `wrangler.jsonc`, the dev-server port, and the C3 bugs worked around. Almost every step needs something from it.
+
+2. **Verify the harness is green before you change anything.** From the repo root:
    ```sh
-   cd /home/coder/projects/supertools-stack
    node scripts/test.mjs
    ```
-   Confirm green PASS.
+   If it's already red, find out why before adding to it. `--reuse-scaffold` speeds up subsequent runs.
 
-3. **Design the wrangler.jsonc patcher**. The scaffolder produces `wrangler.jsonc` (JSON with comments). Adding a D1 binding means upserting:
-   ```jsonc
-   "d1_databases": [
-     {
-       "binding": "DB",
-       "database_name": "{{PROJECT_NAME}}-db",
-       "database_id": "<placeholder>",
-       "migrations_dir": "drizzle"
-     }
-   ]
-   ```
-   Without clobbering existing comments. Two options: (a) regex-based JSONC editor that locates the comment block and inserts after, (b) parse via `jsonc-parser` (no deps; or use Cloudflare's wrangler config schema). Don't add a heavy dep; (a) is enough for v0.1 of the patcher.
+3. **Create `scripts/install-steps/<NN>-<name>.mjs`.** Pick `NN` so the step sorts after everything it depends on — the orchestrator runs numeric-prefix order and rejects a `requires` naming a step that hasn't run yet. Export `id`, `requires`, `provides`, `detect`, `apply`. `detect` returns `{ skip: true }` when `readReceipt` finds a receipt; `apply` does the work and ends with `writeReceipt`, which is what makes re-running the install resumable.
 
-4. **Cascade-contract test approach**. Use Drizzle's runtime introspection (`getTableConfig()` from `drizzle-orm/sqlite-core`) — NOT AST parsing. The test imports the schema, walks every table, asserts every FK to `user` has `onDelete: 'cascade'`. Failure message names the offending table + column. This is robust to formatting changes in schema.ts and gives clean attribution when bumping Drizzle versions breaks something.
+4. **Create `customizations/<NN>-<name>/`** mirroring the paths the files land at in the target project. `.tmpl` files get `{{PLACEHOLDER}}` substitution via `renderTree` from `scripts/render.mjs`; everything else is copied verbatim. Every placeholder must resolve — the renderer throws on leftovers.
 
-5. **Better Auth tables** in `schema.ts`: at least `user`, `session`, `account`, `verification`. Get the exact shape from Better Auth's docs at the version you pin. Plus one `example` table demoing the cascade pattern (FK to `user.id` with `onDelete: 'cascade'`).
+5. **Add the step's tests** as templates under `customizations/<NN>-<name>/tests/<NN>-<name>/`, and add any live-server probe to `scripts/test.mjs` as a new `L3.x` layer. See the Test harness contract section above for what to gate structurally vs. at runtime.
 
-6. **Test harness extension** (in `scripts/test.mjs` or a new helper):
-   - After install: `npm run db:generate` (creates migration SQL from schema)
-   - Apply migrations to local D1 via `npx wrangler d1 migrations apply --local <db-name>`
-   - Run cascade-contract test: `npx vitest run tests/contract/cascade.test.ts`
+6. **One step per commit**, and the commit must leave `node scripts/test.mjs` green — every layer, not just the new one.
 
-7. **Commit message format** (matches existing commits):
-   ```
-   v0.3: 10-db install-step (D1 binding, Drizzle, schema, cascade contract)
-
-   Adds <step file> and customizations/10-db/. Schema declares user/session/
-   account/verification (Better Auth) + example table demonstrating
-   onDelete: 'cascade'. Cascade-contract test introspects schema at runtime
-   via Drizzle's getTableConfig and asserts every user FK cascades.
-
-   Test harness extended: db:generate runs after install, migrations apply
-   to local D1, cascade-contract test runs as L2.7. All four prior layers
-   still green.
-
-   Co-Authored-By: ...
-   ```
-
-8. **Stop and check in with user** before starting `20-auth`. Don't auto-proceed.
+7. **Stop and check in with the user** before starting the next step. Don't auto-proceed through a sequence.
 
 ## How to recover if test.mjs breaks
 
@@ -281,20 +269,23 @@ If `node scripts/test.mjs` fails after a change you made:
 
 ## Things deliberately NOT decided yet
 
-- **Pricing tier names** for the pricing page. Going with `Free / Pro / Enterprise` placeholders unless the user redirects.
-- **Auth-page styling level**. Going with Tailwind-for-layout-only (visible but uniformly unstyled). Confirm with user before committing.
-- **Whether to fold the `50-legal` step into `30-marketing` or keep separate.** Currently planned separate; flag the question to the user when reaching that step.
-- **Codex CLI invocation specifics**. The `codex-install.sh` body and `refresh.mjs` body both depend on the codex CLI's actual flag shape, which we haven't pinned. The user mentioned "codex" specifically — verify which CLI they mean (Anthropic-codex or OpenAI's "Codex"-named tool) before implementing.
+- **Codex CLI invocation specifics.** The `codex-install.sh` body and `refresh.mjs` body both depend on the codex CLI's actual flag shape, which we haven't pinned. The user mentioned "codex" specifically — verify which CLI they mean (Anthropic-codex or OpenAI's "Codex"-named tool) before implementing.
+
+Three questions previously listed here were settled by what shipped, not by an explicit decision — revisit them with the user if they matter:
+
+- Pricing tier names shipped as `Free / Pro / Enterprise` placeholders.
+- Auth pages shipped with Tailwind layout classes, not fully unstyled.
+- `50-legal` stayed a separate step; it overwrites the `terms.tsx` / `privacy.tsx` stubs that `30-marketing` lays down.
 
 ## Open task list (carry-over)
 
-| # | Task | Status |
-|---|---|---|
-| 16 | Modular install-steps model | done (in v0.2-prep commit) |
-| (next) | Implement 10-db install-step | not started |
-| (next) | Real `refresh.mjs` (codex wrapper) | not started, deferred |
-| (next) | Real `codex-install.sh` body | not started, deferred |
-| (next) | L4 Playwright extension | not started; lands with 30-marketing or 40-dashboard |
+| Task | Status |
+|---|---|
+| Real `refresh.mjs` (codex wrapper) | not started, deferred |
+| Real `codex-install.sh` body | not started, deferred |
+| L4 Playwright extension | not started; needed for interactive dashboard UI |
+
+Everything else that was on this list has shipped. **Confirm against `git log` and `scripts/install-steps/` rather than trusting this table** — a hand-maintained status list in a doc is exactly what went stale last time.
 
 ## Outside-this-repo context to know
 
