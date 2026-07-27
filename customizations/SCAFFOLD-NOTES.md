@@ -92,7 +92,7 @@ Notes for our customizations:
 }
 ```
 
-The customizations layer needs a JSONC patcher (preserves comments + handles trailing commas). Adding a `d1_databases` array is the v0.2 work.
+Adding a `d1_databases` array therefore needs a JSONC patcher that preserves comments and handles trailing commas. `scripts/install-steps/10-db.mjs` implements one by hand (no `jsonc-parser` dep), is idempotent on re-run, and validates the result parses. Any later step that needs to add a binding should reuse that approach rather than inventing a second patcher.
 
 ## TanStack Start route conventions
 

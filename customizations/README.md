@@ -7,38 +7,26 @@ Files layered on top of the `npm create cloudflare@latest --framework=tanstack-s
 ```
 customizations/
 ├── SCAFFOLD-NOTES.md      # what the cloudflare scaffolder produces, verbatim
-├── 10-db/                 # templates for install-step 10-db
-│   ├── drizzle.config.ts.tmpl
-│   ├── src/db/schema.ts.tmpl
-│   └── src/db/index.ts.tmpl
-├── 20-auth/
-│   ├── src/lib/auth.ts.tmpl
-│   └── src/routes/api/auth/$.tsx.tmpl
-└── 30-marketing/
-    ├── src/components/MarketingNav.tsx.tmpl
-    ├── src/components/Footer.tsx.tmpl
-    └── src/routes/{index,pricing,terms,privacy,resources/index,resources/example}.tsx.tmpl
+└── <step-id>/             # one subdir per install-step, named exactly for it
+    ├── <paths mirroring where the files land in the target project>
+    └── tests/<step-id>/   # test templates, rendered into the target project
 ```
 
+- One subdir per entry in `scripts/install-steps/`, named identically (`10-db/` ↔ `10-db.mjs`). To see which exist, `ls` this directory — there is deliberately no list of them in this file.
+- Paths inside a step subdir mirror their destination in the generated project.
 - Files ending in `.tmpl` are rendered with `{{PLACEHOLDER}}` substitution by `scripts/render.mjs`. Strip the `.tmpl` suffix on output.
 - All other files are copied verbatim.
 - Every `{{PLACEHOLDER}}` must resolve at install time — `render.mjs` throws on any leftover.
 
-## Status
+Each step's `apply()` imports `renderTree` from `scripts/render.mjs`, renders its own `customizations/<step-id>/` subtree into the project, and finishes by writing a receipt. See `scripts/install-steps/_step-lib.mjs` for the contract and `scripts/install-steps/25-email.mjs` for a small worked example.
 
-**v0.1.** Only `00-scaffold` exists as an install step (no customizations needed — the cloudflare scaffolder is the customization). Subsequent layers add their own subdir:
-
-- `10-db` — D1 binding in `wrangler.jsonc`, `drizzle.config.ts`, `src/db/schema.ts` (with Better Auth tables + cascade FKs), `src/db/index.ts`. Vitest cascade-contract test.
-- `20-auth` — Better Auth wiring, default unstyled auth pages.
-- `30-marketing` — Marketing pages (home, pricing, terms, privacy, resources), nav, footer, SEO wrapper.
-
-Each step's `apply()` function imports the renderer from `scripts/render.mjs` and renders its `customizations/<step-id>/` subtree into the project. See `scripts/install-steps/_step-lib.mjs` for the contract.
+A step subdir is not required — `00-scaffold` has none, because the cloudflare scaffolder *is* its output.
 
 ## Adding a new install step
 
-1. Create `scripts/install-steps/<NN>-<name>.mjs` exporting `id`, `requires`, `provides`, `detect`, `apply`.
+1. Create `scripts/install-steps/<NN>-<name>.mjs` exporting `id`, `requires`, `provides`, `detect`, `apply`. Choose `NN` so the step sorts after everything in its `requires`.
 2. Create `customizations/<NN>-<name>/` with the templates the step renders.
-3. Add tests under `tests/<NN>-<name>/` (Vitest, Playwright, or both).
+3. Add test templates under `customizations/<NN>-<name>/tests/<NN>-<name>/` — they render into the generated project alongside everything else. There is no top-level `tests/` directory in this repo; the repo's own end-to-end gate is `scripts/test.mjs`, and live-server probes are added there as a new `L3.x` layer.
 4. Run `node scripts/test.mjs` — the orchestrator picks up the new step automatically; the test harness exercises it as part of the full pipeline.
 
 ## Why per-step folders
