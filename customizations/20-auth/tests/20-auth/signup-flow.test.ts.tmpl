@@ -37,7 +37,10 @@ describe('signup flow', () => {
   it('POST /api/auth/sign-up/email returns 200 and sets a session cookie', async () => {
     const res = await fetch(`${BASE}/api/auth/sign-up/email`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // Better Auth >=1.4 rejects state-changing requests that arrive with no
+      // Origin header (403 MISSING_OR_NULL_ORIGIN) as CSRF protection. Node's
+      // fetch does not set one, so the test must send it explicitly.
+      headers: { 'Content-Type': 'application/json', Origin: BASE },
       body: JSON.stringify({ email, password, name }),
     });
     expect(res.status, await res.clone().text()).toBe(200);

@@ -36,6 +36,7 @@ const TEMPLATE_DIR = path.join(repoRoot, 'customizations', '10-db');
 // contract test gates accidental breakage on update.
 const DRIZZLE_ORM = '^0.45.2';
 const DRIZZLE_KIT = '^0.31.10';
+const VITEST      = '^4.1.5';
 const BETTER_AUTH = '^1.6.9';
 
 export const id = '10-db';
@@ -83,6 +84,7 @@ export async function apply(ctx) {
     pinned: {
       'drizzle-orm': DRIZZLE_ORM,
       'drizzle-kit': DRIZZLE_KIT,
+      vitest: VITEST,
       'better-auth': BETTER_AUTH,
     },
     dbName: `${ctx.projectName}-db`,
@@ -237,12 +239,21 @@ async function patchPackageJson(targetPath, projectName) {
   pkg.dependencies['drizzle-orm'] = DRIZZLE_ORM;
   pkg.dependencies['better-auth'] = BETTER_AUTH;
   pkg.devDependencies['drizzle-kit'] = DRIZZLE_KIT;
+  // This step ships vitest.contract.config.ts and a contract test, and 20-auth
+  // ships vitest.auth.config.ts and a signup test — so the scaffold owns vitest
+  // and must declare it. Without this every test target fails 'vitest: not
+  // found', and `tsc --noEmit` fails TS2307 on the vitest module in both test
+  // files, so a fresh scaffold cannot pass its own verifier.
+  pkg.devDependencies['vitest'] = VITEST;
 
   pkg.scripts['db:generate'] = 'drizzle-kit generate';
   pkg.scripts['db:migrate:local'] =
     `wrangler d1 migrations apply --local ${projectName}-db`;
   pkg.scripts['test:contract'] =
     'vitest run --config vitest.contract.config.ts';
+  // Point bare `npm test` at the contract suite. A plain `vitest run` breaks on
+  // the Cloudflare vite plugin's resolve.external validation.
+  pkg.scripts['test'] = 'npm run test:contract';
 
   await fs.writeFile(file, JSON.stringify(pkg, null, 2) + '\n');
 }
