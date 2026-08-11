@@ -19,7 +19,7 @@ mkdir -p "$REVIEWS_DIR" "$TASKS_DETAIL_DIR" "$AGENT_DIR/prd"
 # Project-relative defaults only — no personal absolute paths in the reusable
 # engine. Extra sources (e.g. an out-of-repo reference codebase) come from
 # $RALPH_PLAN_SOURCES or a project-local .agent/plan-sources.txt (one per line),
-# which skill 15 writes for VeilBoard (the PoC path lives there, not here).
+# which skill 15 writes for the project (the PoC path lives there, not here).
 DEFAULT_SOURCES="design/product-plan docs/00-product-spec.md .supertools-state/ralph-requirements.json .agent/DECISIONS.md src wrangler.jsonc"
 SOURCES="${RALPH_PLAN_SOURCES:-$DEFAULT_SOURCES}"
 if [ -f "$AGENT_DIR/plan-sources.txt" ]; then
@@ -35,7 +35,7 @@ gen_prompt() {  # $1 = round, $2 = findings-file (empty on round 0)
   for s in $SOURCES; do printf -- '- %s\n' "$s"; done
   printf '\n## Outputs to (over)write\n- .agent/prd/PRD.md\n- .agent/prd/SUMMARY.md\n- .agent/tasks.json\n- .agent/tasks/TASK-*.json\n'
   if [ "$round" -gt 0 ] && [ -s "$findings" ]; then
-    printf '\n## REVISION ROUND %s — address every blocking finding below, then rewrite the plan files.\n\n' "$round"
+    printf '\n## REVISION ROUND %s — the plan files ALREADY EXIST. EDIT THEM IN PLACE to address every blocking finding below. Preserve everything already correct; only fix/add/split exactly what the findings call out. Do NOT regenerate the plan from scratch — keep the task ids and good tasks stable so fixes accumulate across rounds. After editing, keep tasks.json and every tasks/TASK-*.json internally consistent with PRD.md and DECISIONS.md.\n\n' "$round"
     cat "$findings"
   fi
 }

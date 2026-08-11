@@ -82,6 +82,18 @@ ensure_build_branch() {
   fi
 }
 
+# Defensively keep secret-bearing files OUT of every commit, even if a stale
+# index or a missing gitignore rule would otherwise include them. (A vim .env.swp
+# once leaked into a baseline via `git add -A`.) Call after every `git add -A`.
+guard_secret_files() {
+  for p in .env .env.local .env.swp .dev.vars .dev.vars.local; do
+    git -C "$PROJECT_ROOT" rm -q --cached --ignore-unmatch "$p" >/dev/null 2>&1 || true
+  done
+  git -C "$PROJECT_ROOT" ls-files -z -- '*.swp' '*.swo' '.env' '.env.*' '.dev.vars*' 2>/dev/null \
+    | grep -zv '\.example$' \
+    | xargs -0 -r git -C "$PROJECT_ROOT" rm -q --cached --ignore-unmatch >/dev/null 2>&1 || true
+}
+
 # Per-task commits are the rollback boundary, and each per-task diff must contain
 # ONLY that task's work. Any pre-existing dirty state (e.g. the harness + approved
 # plan laid by skills 14/15, or unrelated edits) is captured in ONE labeled
@@ -90,6 +102,7 @@ ensure_clean_baseline() {
   if [ -n "$(git -C "$PROJECT_ROOT" status --porcelain)" ]; then
     log "dirty worktree at build start — capturing a baseline commit so task diffs stay isolated"
     git -C "$PROJECT_ROOT" add -A
+    guard_secret_files
     git -C "$PROJECT_ROOT" -c core.hooksPath=/dev/null commit -q \
       -m "chore(ralph): baseline before build loop" \
       -m "Captures the harness + approved plan + any pre-existing changes." \
@@ -118,6 +131,7 @@ stash_attempt() {
 commit_task() {
   local id="$1"; local title="$2"
   git -C "$PROJECT_ROOT" add -A
+  guard_secret_files
   if git -C "$PROJECT_ROOT" diff --cached --quiet; then
     log "no staged changes for $id — nothing to commit"; return 2
   fi
@@ -125,6 +139,16 @@ commit_task() {
     -m "feat($id): $title" \
     -m "Implemented and council-approved (Codex + Gemini) via ralph build loop." \
     -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+}
+
+reap_dev_servers() {
+  for port in 3000 5173 8788 8787; do
+    if command -v fuser >/dev/null 2>&1; then
+      fuser -k "${port}/tcp" >/dev/null 2>&1 || true
+    elif command -v lsof >/dev/null 2>&1; then
+      lsof -ti "tcp:${port}" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+    fi
+  done
 }
 
 log_entry() {

@@ -9,11 +9,16 @@
 # runs. Natively we substitute: a dedicated git branch + per-task commit +
 # the council review gate before each commit (see ralph-council.sh).
 
+# Per-agent wall-clock cap. A hung agent must never block the loop forever
+# (a stuck claude once hung a build for ~14h). On timeout the call returns 124
+# and the loop degrades gracefully (no diff → block, or unclear verdict → fix).
+RALPH_AGENT_TIMEOUT="${RALPH_AGENT_TIMEOUT:-1800}"   # 30 min
+
 # run_claude <prompt-file> <out-file>  — implementer / generator / claude-reviewer
 # Runs in $PROJECT_ROOT (like the codex/gemini reviewers) so file paths resolve.
 run_claude() {
   local pf="$1" out="$2"
-  ( cd "$PROJECT_ROOT" && claude -p \
+  ( cd "$PROJECT_ROOT" && timeout -k 15 "$RALPH_AGENT_TIMEOUT" claude -p \
       --model "$RALPH_CLAUDE_MODEL" \
       --permission-mode bypassPermissions \
       < "$pf" ) > "$out" 2>&1
@@ -23,7 +28,7 @@ run_claude() {
 # run_codex <prompt-file> <out-file>  — reviewer (gpt-5.5, high reasoning)
 run_codex() {
   local pf="$1" out="$2"
-  codex exec \
+  timeout -k 15 "$RALPH_AGENT_TIMEOUT" codex exec \
     --cd "$PROJECT_ROOT" \
     --dangerously-bypass-approvals-and-sandbox \
     -m "$RALPH_CODEX_MODEL" \
@@ -35,7 +40,10 @@ run_codex() {
 # run_gemini <prompt-file> <out-file>  — reviewer (gemini-2.5-pro)
 run_gemini() {
   local pf="$1" out="$2"
-  ( cd "$PROJECT_ROOT" && gemini -m "$RALPH_GEMINI_MODEL" -y -p "$(cat "$pf")" ) > "$out" 2>&1
+  # Prompt via STDIN, not argv: build-review prompts embed large diffs that
+  # overflow ARG_MAX ("Argument list too long") when passed via -p. Gemini reads
+  # a piped prompt from stdin in non-interactive (-y) mode.
+  ( cd "$PROJECT_ROOT" && timeout -k 15 "$RALPH_AGENT_TIMEOUT" gemini -m "$RALPH_GEMINI_MODEL" -y < "$pf" ) > "$out" 2>&1
   return $?
 }
 
@@ -51,11 +59,14 @@ run_reviewers_parallel() {
 
 # Verdict parsing — find the last APPROVED/REJECTED token of a given family.
 # verdict <out-file> <APPROVE_TOKEN> <REJECT_TOKEN>  -> echoes approved|rejected|unclear
+# Strips ANSI escapes and forces text mode (-a): agent logs embed colorized tool
+# output (npm/wrangler/vite) that otherwise makes grep treat the file as binary
+# and miss the verdict. The agent's FINAL line is the authoritative verdict.
 verdict() {
   local out="$1" ok="$2" no="$3"
   local line
-  line="$(grep -oE "($ok|$no)" "$out" 2>/dev/null | tail -1)"
-  if   echo "$line" | grep -q "$no"; then echo "rejected"
-  elif echo "$line" | grep -q "$ok"; then echo "approved"
+  line="$(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$out" 2>/dev/null | grep -aoE "($ok|$no)" | tail -1)"
+  if   [ "$line" = "$no" ]; then echo "rejected"
+  elif [ "$line" = "$ok" ]; then echo "approved"
   else echo "unclear"; fi
 }

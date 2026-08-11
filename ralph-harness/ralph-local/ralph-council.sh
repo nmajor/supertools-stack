@@ -56,6 +56,7 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
     log "🎉 COMPLETE — all $(task_total) tasks pass. <promise>COMPLETE</promise>"
     exit $EXIT_COMPLETE
   fi
+  reap_dev_servers   # clear any dev server a prior/timed-out agent left holding a port
   id="$(next_task_id)"
   if [ -z "$id" ]; then
     # No runnable task, yet not all passed → only blocked-incomplete tasks remain.
@@ -69,7 +70,17 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
   # 1) implement
   ip="$(mktemp)"; implement_prompt "$id" > "$ip"
   io="$HISTORY_DIR/$id-implement.log"
-  run_claude "$ip" "$io" || log "implementer exited nonzero — checking what it produced"
+  it=1
+  while :; do
+    run_claude "$ip" "$io"; irc=$?
+    # A transient implementer failure (empty output — e.g. a CLI/rate-limit
+    # hiccup) is not a no-op. Retry with backoff before judging the task.
+    if [ ! -s "$io" ] && [ "$it" -le 2 ]; then
+      log "   implementer produced no output (exit $irc) — retry $it after backoff"; sleep $((it*30)); it=$((it+1)); continue
+    fi
+    break
+  done
+  [ "$irc" -ne 0 ] && log "implementer exited nonzero ($irc) — checking what it produced"
   iout="$(cat "$io")"
   if needs_help "$iout"; then
     reason="$(extract_blocked_reason "$iout")$(extract_decide_question "$iout")"
@@ -79,23 +90,45 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
     log "⛔ $id raised BLOCKED/DECIDE: $reason"
     exit $EXIT_BLOCKED
   fi
-  # The implementer must actually change something. No diff → it didn't do the
-  # task; do not send an empty diff to review or finalize a no-op task.
+  # Most tasks change files. Some (deploy/secret-sync) are OPERATIONAL — their
+  # deliverables are remote side-effects (wrangler secret put, custom domains)
+  # with no repo diff. Distinguish the two: no diff + a DONE promise = operational
+  # (review the report); no diff + no DONE = a genuine no-op → block.
+  operational=false
   git -C "$PROJECT_ROOT" add -A
   if git -C "$PROJECT_ROOT" diff --cached --quiet; then
-    stash_attempt "$id" "no-diff"
-    mark_task_blocked "$id"
-    log "⛔ $id: implementer produced no changes — marked blocked. <promise>BLOCKED:$id no diff</promise>"
-    exit $EXIT_BLOCKED
+    if echo "$iout" | grep -q "<promise>$id:DONE</promise>"; then
+      operational=true
+      log "   $id produced no file diff but signaled DONE — operational task; the council reviews its report + remote effects."
+    else
+      stash_attempt "$id" "no-diff"
+      mark_task_blocked "$id"
+      log "⛔ $id: implementer produced no changes and did not signal DONE — marked blocked. <promise>BLOCKED:$id no diff</promise>"
+      exit $EXIT_BLOCKED
+    fi
+  else
+    echo "$iout" | grep -q "<promise>$id:DONE</promise>" \
+      || log "   note: $id DONE tag not found in implementer output — proceeding on the produced diff"
   fi
-  echo "$iout" | grep -q "<promise>$id:DONE</promise>" \
-    || log "   note: $id DONE tag not found in implementer output — proceeding on the produced diff"
 
   # 2) review (Codex + Gemini, parallel) → fix loop
   approved=false
   for rr in $(seq 1 "$MAX_REVIEW_ROUNDS"); do
     git -C "$PROJECT_ROOT" add -A
-    diff="$(mktemp)"; git -C "$PROJECT_ROOT" diff --cached --stat > "$diff"; git -C "$PROJECT_ROOT" diff --cached | head -c 200000 >> "$diff"
+    diff="$(mktemp)"
+    if [ "$operational" = true ]; then
+      # No code diff — review the implementer's report of the operational work it
+      # performed (reviewers can independently verify via wrangler/API as needed).
+      { echo "OPERATIONAL TASK — no file diff. The implementer reports it performed"
+        echo "remote/side-effecting work (e.g. wrangler secret put, custom domains,"
+        echo "deploy, external API config). Verify the claimed effects are real and"
+        echo "complete (you may run read-only checks like 'wrangler secret list')."
+        echo; echo "## Implementer report:"; cat "$io"; } > "$diff"
+    else
+      git -C "$PROJECT_ROOT" diff --cached --stat > "$diff"
+      # Exclude noisy lockfiles from the content diff (kept in --stat); cap size.
+      git -C "$PROJECT_ROOT" diff --cached -- . ':(exclude)package-lock.json' ':(exclude)*.lock' | head -c 200000 >> "$diff"
+    fi
     rp="$(mktemp)"; review_prompt "$id" "$diff" > "$rp"
     xr="$REVIEWS_DIR/$id-CODE-REVIEW-$rr-codex.md"
     mr="$REVIEWS_DIR/$id-CODE-REVIEW-$rr-gemini.md"
@@ -105,6 +138,11 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
     wait $a; wait $b
     vx="$(verdict "$xr" CODE_APPROVED CODE_REJECTED)"
     vm="$(verdict "$mr" CODE_APPROVED CODE_REJECTED)"
+    # A reviewer that returns NO parseable verdict (empty/errored output — e.g. a
+    # transient rate-limit) is NOT a rejection. Retry it with backoff before
+    # counting it, so a flaky API call can't burn fix rounds or false-block a task.
+    ra=1; while [ "$vx" = unclear ] && [ "$ra" -le 2 ]; do log "   codex verdict unclear — retry $ra after backoff"; sleep $((ra*30)); run_codex "$rp" "$xr"; vx="$(verdict "$xr" CODE_APPROVED CODE_REJECTED)"; ra=$((ra+1)); done
+    rb=1; while [ "$vm" = unclear ] && [ "$rb" -le 2 ]; do log "   gemini verdict unclear — retry $rb after backoff"; sleep $((rb*30)); run_gemini "$rp" "$mr"; vm="$(verdict "$mr" CODE_APPROVED CODE_REJECTED)"; rb=$((rb+1)); done
     log "   verdicts: codex=$vx · gemini=$vm"
     if [ "$vx" = approved ] && [ "$vm" = approved ]; then approved=true; break; fi
     if [ "$rr" -lt "$MAX_REVIEW_ROUNDS" ]; then
@@ -123,17 +161,21 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
     exit $EXIT_BLOCKED
   fi
 
-  # 3) accept: mark + log, then COMMIT (must succeed). A task is only finalized
-  #    once its per-task commit lands; a commit failure restores the tree + blocks.
+  # 3) accept: mark + log, then COMMIT (must succeed for code tasks). Operational
+  #    tasks have nothing to commit — they're finalized on council approval + their
+  #    verified remote effects.
   mark_task_pass "$id"
-  log_entry "$id — $title" "Council-approved (codex+gemini). Review: $REVIEWS_DIR/$id-CODE-REVIEW-*."
-  if ! commit_task "$id" "$title"; then
+  log_entry "$id — $title" "Council-approved (codex+gemini)$([ "$operational" = true ] && echo ' [operational — no diff]'). Review: $REVIEWS_DIR/$id-CODE-REVIEW-*."
+  if [ "$operational" = true ]; then
+    log "   ✓ $id done (operational, no commit) ($(task_remaining) remaining)"
+  elif ! commit_task "$id" "$title"; then
     stash_attempt "$id" "commit-fail"
     mark_task_blocked "$id"
     log "⛔ $id: commit failed — restored tree, marked blocked. <promise>BLOCKED:$id commit</promise>"
     exit $EXIT_BLOCKED
+  else
+    log "   ✓ $id done & committed ($(task_remaining) remaining)"
   fi
-  log "   ✓ $id done & committed ($(task_remaining) remaining)"
 done
 
 log "⚠️ reached max iterations ($MAX_ITERATIONS); $(task_remaining) tasks remain."
